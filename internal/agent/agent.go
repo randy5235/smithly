@@ -18,16 +18,23 @@ import (
 	"smithly.dev/internal/workspace"
 )
 
+// ErrTokenLimitReached is returned when the agent's token usage limit is reached.
+var ErrTokenLimitReached = fmt.Errorf("agent paused: token usage limit reached")
+
 // Agent represents a running agent with its workspace, memory, tools, and LLM connection.
 type Agent struct {
-	ID        string
-	Model     string
-	BaseURL   string
-	APIKey    string
-	Workspace *workspace.Workspace
-	Store     db.Store
-	Tools     *tools.Registry
-	client    *http.Client
+	ID         string
+	Model      string
+	BaseURL    string
+	APIKey     string
+	MaxContext int // max context window in tokens (0 = default 128k)
+	TokenLimit int // max tokens before pausing (0 = unlimited)
+	TokensUsed int // running total of estimated tokens used
+	Paused     bool
+	Workspace  *workspace.Workspace
+	Store      db.Store
+	Tools      *tools.Registry
+	client     *http.Client
 }
 
 // New creates a new agent.
@@ -67,6 +74,10 @@ type Callbacks struct {
 	// Approve is called when a tool needs user approval.
 	// Returns true if the user approves.
 	Approve tools.ApprovalFunc
+
+	// OnPaused is called when the agent hits its token limit.
+	// Receives tokens used and the limit.
+	OnPaused func(used int, limit int)
 }
 
 // chatMessage is a message in the OpenAI chat format, extended for tool use.
@@ -96,9 +107,27 @@ type chatRequest struct {
 	Stream   bool               `json:"stream"`
 }
 
+// Unpause resets the agent's token counter and unpauses it.
+func (a *Agent) Unpause() {
+	a.TokensUsed = 0
+	a.Paused = false
+}
+
+// Boot runs the BOOT.md content as the first message if it exists.
+// Called once when the agent starts. Returns empty string if no boot content.
+func (a *Agent) Boot(ctx context.Context, cb *Callbacks) (string, error) {
+	if a.Workspace.Boot == "" {
+		return "", nil
+	}
+	return a.Chat(ctx, a.Workspace.Boot, cb)
+}
+
 // Chat sends a user message, runs the agent loop (possibly multiple LLM round-trips
 // if tool calls are involved), and returns the final text response.
 func (a *Agent) Chat(ctx context.Context, userMessage string, cb *Callbacks) (string, error) {
+	if a.Paused {
+		return "", ErrTokenLimitReached
+	}
 	if cb == nil {
 		cb = &Callbacks{}
 	}
@@ -115,30 +144,49 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, cb *Callbacks) (st
 	}
 
 	// Build message list: system prompt + recent history
+	systemPrompt := a.Workspace.SystemPrompt()
 	messages := []chatMessage{
-		{Role: "system", Content: a.Workspace.SystemPrompt()},
+		{Role: "system", Content: systemPrompt},
 	}
 
-	history, err := a.Store.GetMessages(ctx, a.ID, 50)
+	// Get tool definitions (needed for context budget calculation)
+	var toolDefs []tools.OpenAITool
+	toolDefsTokens := 0
+	if len(a.Tools.All()) > 0 {
+		toolDefs = a.Tools.OpenAITools()
+		// Rough estimate: ~100 tokens per tool definition
+		toolDefsTokens = len(toolDefs) * 100
+	}
+
+	history, err := a.Store.GetMessages(ctx, a.ID, 200)
 	if err != nil {
 		return "", fmt.Errorf("load history: %w", err)
 	}
+	var historyMsgs []chatMessage
 	for _, m := range history {
-		messages = append(messages, chatMessage{Role: m.Role, Content: m.Content})
+		historyMsgs = append(historyMsgs, chatMessage{Role: m.Role, Content: m.Content})
 	}
 
-	// Get tool definitions
-	var toolDefs []tools.OpenAITool
-	if len(a.Tools.All()) > 0 {
-		toolDefs = a.Tools.OpenAITools()
-	}
+	// Trim history to fit within context window
+	historyMsgs = a.trimHistory(systemPrompt, historyMsgs, toolDefsTokens)
+	messages = append(messages, historyMsgs...)
 
 	// Agent loop — keep going until we get a text response (no more tool calls)
 	const maxIterations = 20
+	ld := newLoopDetector()
 	for i := 0; i < maxIterations; i++ {
 		response, err := a.sendChat(ctx, messages, toolDefs, cb.OnDelta)
 		if err != nil {
 			return "", err
+		}
+
+		// Track token usage from API response (or estimate)
+		a.trackUsage(response)
+		if a.Paused {
+			if cb.OnPaused != nil {
+				cb.OnPaused(a.TokensUsed, a.TokenLimit)
+			}
+			return "", ErrTokenLimitReached
 		}
 
 		// If the response has tool calls, execute them and loop
@@ -150,9 +198,14 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, cb *Callbacks) (st
 			})
 
 			// Execute each tool call
+			loopDetected := false
 			for _, tc := range response.ToolCalls {
 				if cb.OnToolCall != nil {
 					cb.OnToolCall(tc.Function.Name, tc.Function.Arguments)
+				}
+
+				if ld.record(tc.Function.Name, tc.Function.Arguments) {
+					loopDetected = true
 				}
 
 				result, err := a.Tools.Execute(ctx, tc.Function.Name, json.RawMessage(tc.Function.Arguments), cb.Approve)
@@ -180,6 +233,21 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, cb *Callbacks) (st
 					ToolCallID: tc.ID,
 				})
 			}
+
+			// If loop detected, inject a nudge to break the cycle
+			if loopDetected {
+				a.Store.LogAudit(ctx, &db.AuditEntry{
+					Actor:      "agent:" + a.ID,
+					Action:     "loop_detected",
+					Details:    "repeated tool calls detected, injecting correction",
+					TrustLevel: "system",
+				})
+				messages = append(messages, chatMessage{
+					Role:    "user",
+					Content: "[system] You are repeating the same tool call. Stop and provide a final text response to the user. If you are stuck, explain what went wrong.",
+				})
+			}
+
 			continue // Loop back to send tool results to LLM
 		}
 
@@ -211,8 +279,31 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, cb *Callbacks) (st
 
 // llmResponse is the parsed response from the LLM.
 type llmResponse struct {
-	Content   string
-	ToolCalls []toolCall
+	Content      string
+	ToolCalls    []toolCall
+	PromptTokens int // from API usage field, 0 if not available
+	OutputTokens int // from API usage field, 0 if not available
+}
+
+// trackUsage updates the agent's token counter and pauses if limit is reached.
+func (a *Agent) trackUsage(resp *llmResponse) {
+	if a.TokenLimit <= 0 {
+		return
+	}
+
+	tokens := resp.PromptTokens + resp.OutputTokens
+	if tokens == 0 {
+		// Fallback: estimate from response content
+		tokens = estimateTokens(resp.Content)
+		for _, tc := range resp.ToolCalls {
+			tokens += estimateTokens(tc.Function.Arguments)
+		}
+	}
+
+	a.TokensUsed += tokens
+	if a.TokensUsed >= a.TokenLimit {
+		a.Paused = true
+	}
 }
 
 func (a *Agent) sendChat(ctx context.Context, messages []chatMessage, toolDefs []tools.OpenAITool, onDelta func(string)) (*llmResponse, error) {
@@ -344,6 +435,10 @@ func (a *Agent) readFull(body io.Reader) (*llmResponse, error) {
 				ToolCalls []toolCall `json:"tool_calls"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.NewDecoder(body).Decode(&apiResp); err != nil {
 		return nil, fmt.Errorf("decode llm response: %w", err)
@@ -353,7 +448,9 @@ func (a *Agent) readFull(body io.Reader) (*llmResponse, error) {
 	}
 
 	return &llmResponse{
-		Content:   apiResp.Choices[0].Message.Content,
-		ToolCalls: apiResp.Choices[0].Message.ToolCalls,
+		Content:      apiResp.Choices[0].Message.Content,
+		ToolCalls:    apiResp.Choices[0].Message.ToolCalls,
+		PromptTokens: apiResp.Usage.PromptTokens,
+		OutputTokens: apiResp.Usage.CompletionTokens,
 	}, nil
 }

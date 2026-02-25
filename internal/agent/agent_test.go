@@ -537,6 +537,126 @@ func TestChatUnknownToolError(t *testing.T) {
 	}
 }
 
+func TestChatTokenLimitPauses(t *testing.T) {
+	// Each response is ~100 tokens (400 chars / 4), limit is 150
+	// First response fits, second should trigger pause
+	mock := &mockLLM{
+		responses: []mockResponse{
+			{content: strings.Repeat("a", 400)}, // ~100 tokens
+			{content: strings.Repeat("b", 400)}, // ~100 tokens — total ~200, over 150 limit
+		},
+	}
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	a := newTestAgent(t, srv)
+	a.TokenLimit = 150
+
+	// First chat should work
+	_, err := a.Chat(context.Background(), "hello", nil)
+	if err != nil {
+		t.Fatalf("first Chat: %v", err)
+	}
+	if a.Paused {
+		t.Fatal("should not be paused after first chat")
+	}
+
+	// Second chat should hit the limit
+	_, err = a.Chat(context.Background(), "hello again", nil)
+	if err != agent.ErrTokenLimitReached {
+		t.Errorf("expected ErrTokenLimitReached, got %v", err)
+	}
+	if !a.Paused {
+		t.Error("agent should be paused")
+	}
+
+	// Unpause should reset
+	a.Unpause()
+	if a.Paused {
+		t.Error("agent should not be paused after Unpause")
+	}
+	if a.TokensUsed != 0 {
+		t.Errorf("tokens used = %d, want 0 after Unpause", a.TokensUsed)
+	}
+}
+
+func TestChatTokenLimitCallsOnPaused(t *testing.T) {
+	mock := &mockLLM{
+		responses: []mockResponse{
+			{content: strings.Repeat("x", 400)}, // ~100 tokens
+		},
+	}
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	a := newTestAgent(t, srv)
+	a.TokenLimit = 10 // Will be exceeded on first response
+
+	var pausedCalled bool
+	var pausedUsed, pausedLimit int
+	cb := &agent.Callbacks{
+		OnPaused: func(used int, limit int) {
+			pausedCalled = true
+			pausedUsed = used
+			pausedLimit = limit
+		},
+	}
+
+	_, err := a.Chat(context.Background(), "trigger limit", cb)
+	if err != agent.ErrTokenLimitReached {
+		t.Fatalf("expected ErrTokenLimitReached, got %v", err)
+	}
+	if !pausedCalled {
+		t.Error("OnPaused callback was not called")
+	}
+	if pausedLimit != 10 {
+		t.Errorf("limit = %d, want 10", pausedLimit)
+	}
+	if pausedUsed <= 0 {
+		t.Error("used should be > 0")
+	}
+}
+
+func TestChatLoopDetection(t *testing.T) {
+	// Simulate LLM stuck in a loop: calls same tool 3 times, then gets nudged and responds
+	mock := &mockLLM{
+		responses: []mockResponse{
+			// Iteration 1-3: same tool call
+			{toolCalls: []mockTool{{id: "call_1", name: "echo_tool", args: `{"text":"stuck"}`}}},
+			{toolCalls: []mockTool{{id: "call_2", name: "echo_tool", args: `{"text":"stuck"}`}}},
+			{toolCalls: []mockTool{{id: "call_3", name: "echo_tool", args: `{"text":"stuck"}`}}},
+			// After nudge, LLM gives a text response
+			{content: "Sorry, I was stuck in a loop."},
+		},
+	}
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	a := newTestAgent(t, srv)
+	a.Tools.Register(&echoTool{})
+
+	result, err := a.Chat(context.Background(), "do something", nil)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if result != "Sorry, I was stuck in a loop." {
+		t.Errorf("result = %q, want loop recovery message", result)
+	}
+
+	// Verify loop was audited
+	entries, _ := a.Store.GetAuditLog(context.Background(), db.AuditQuery{})
+	found := false
+	for _, e := range entries {
+		if e.Action == "loop_detected" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("loop_detected audit entry not found")
+	}
+}
+
 // --- Test tools ---
 
 type echoTool struct{}

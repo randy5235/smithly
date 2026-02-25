@@ -37,13 +37,16 @@ type StorageConfig struct {
 }
 
 type AgentConfig struct {
-	ID        string          `toml:"id"`
-	Model     string          `toml:"model"`
-	Workspace string          `toml:"workspace"`
-	Provider  string          `toml:"provider"`
-	APIKey    string          `toml:"api_key"`
-	BaseURL   string          `toml:"base_url"`
-	Heartbeat *HeartbeatConfig `toml:"heartbeat"`
+	ID         string           `toml:"id"`
+	Model      string           `toml:"model"`
+	Workspace  string           `toml:"workspace"`
+	Provider   string           `toml:"provider"`
+	APIKey     string           `toml:"api_key"`
+	BaseURL    string           `toml:"base_url"`
+	MaxContext int              `toml:"max_context"` // Context window in tokens (0 = 128k default)
+	TokenLimit int              `toml:"token_limit"` // Max tokens before pausing agent (0 = unlimited)
+	Tools      []string         `toml:"tools"`       // Allowed tool names (empty = all)
+	Heartbeat  *HeartbeatConfig `toml:"heartbeat"`
 }
 
 type HeartbeatConfig struct {
@@ -156,6 +159,117 @@ workspace = %q
 	}
 	if agent.BaseURL != "" {
 		fmt.Fprintf(f, "base_url = %q\n", agent.BaseURL)
+	}
+
+	return nil
+}
+
+// AppendAgent adds a new agent section to an existing config file.
+func AppendAgent(path string, agent AgentConfig) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	fmt.Fprintf(f, "\n[[agents]]\nid = %q\nmodel = %q\nworkspace = %q\n",
+		agent.ID, agent.Model, agent.Workspace)
+	if agent.Provider != "" {
+		fmt.Fprintf(f, "provider = %q\n", agent.Provider)
+	}
+	if agent.APIKey != "" {
+		fmt.Fprintf(f, "api_key = %q\n", agent.APIKey)
+	}
+	if agent.BaseURL != "" {
+		fmt.Fprintf(f, "base_url = %q\n", agent.BaseURL)
+	}
+	if len(agent.Tools) > 0 {
+		fmt.Fprintf(f, "tools = [")
+		for i, t := range agent.Tools {
+			if i > 0 {
+				fmt.Fprint(f, ", ")
+			}
+			fmt.Fprintf(f, "%q", t)
+		}
+		fmt.Fprint(f, "]\n")
+	}
+	return nil
+}
+
+// RemoveAgent removes an agent from the config by rewriting the file without it.
+func RemoveAgent(path string, agentID string) error {
+	cfg, err := Load(path)
+	if err != nil {
+		return err
+	}
+
+	found := false
+	var remaining []AgentConfig
+	for _, a := range cfg.Agents {
+		if a.ID == agentID {
+			found = true
+			continue
+		}
+		remaining = append(remaining, a)
+	}
+	if !found {
+		return fmt.Errorf("agent %q not found", agentID)
+	}
+
+	// Rewrite config with remaining agents
+	return rewriteConfig(path, cfg, remaining)
+}
+
+// rewriteConfig writes the full config with a new set of agents.
+func rewriteConfig(path string, cfg *Config, agents []AgentConfig) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	fmt.Fprintf(f, "[gateway]\nbind = %q\nport = %d\ntoken = %q\nrate_limit = %d\n",
+		cfg.Gateway.Bind, cfg.Gateway.Port, cfg.Gateway.Token, cfg.Gateway.RateLimit)
+
+	fmt.Fprintf(f, "\n[sandbox]\nprovider = %q\n", cfg.Sandbox.Provider)
+	fmt.Fprintf(f, "\n[storage]\ndatabase = %q\nfiles_dir = %q\n",
+		cfg.Storage.Database, cfg.Storage.FilesDir)
+	fmt.Fprintf(f, "\n[search]\nprovider = %q\n", cfg.Search.Provider)
+	if cfg.Search.APIKey != "" {
+		fmt.Fprintf(f, "api_key = %q\n", cfg.Search.APIKey)
+	}
+
+	for _, a := range agents {
+		fmt.Fprintf(f, "\n[[agents]]\nid = %q\nmodel = %q\nworkspace = %q\n",
+			a.ID, a.Model, a.Workspace)
+		if a.Provider != "" {
+			fmt.Fprintf(f, "provider = %q\n", a.Provider)
+		}
+		if a.APIKey != "" {
+			fmt.Fprintf(f, "api_key = %q\n", a.APIKey)
+		}
+		if a.BaseURL != "" {
+			fmt.Fprintf(f, "base_url = %q\n", a.BaseURL)
+		}
+		if len(a.Tools) > 0 {
+			fmt.Fprintf(f, "tools = [")
+			for i, t := range a.Tools {
+				if i > 0 {
+					fmt.Fprint(f, ", ")
+				}
+				fmt.Fprintf(f, "%q", t)
+			}
+			fmt.Fprint(f, "]\n")
+		}
+		if a.Heartbeat != nil && a.Heartbeat.Enabled {
+			fmt.Fprintf(f, "\n[agents.heartbeat]\nenabled = true\n")
+			if a.Heartbeat.Interval != "" {
+				fmt.Fprintf(f, "interval = %q\n", a.Heartbeat.Interval)
+			}
+			if a.Heartbeat.QuietHours != "" {
+				fmt.Fprintf(f, "quiet_hours = %q\n", a.Heartbeat.QuietHours)
+			}
+		}
 	}
 
 	return nil

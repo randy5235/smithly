@@ -25,6 +25,8 @@ type Workspace struct {
 	Identity     Identity // IDENTITY.toml
 	User         string   // USER.md contents
 	Instructions string   // INSTRUCTIONS.md contents
+	Boot         string   // BOOT.md — sent as first message on startup
+	Heartbeat    string   // HEARTBEAT.md — sent periodically
 }
 
 // Load reads all workspace files from the given directory.
@@ -35,6 +37,8 @@ func Load(dir string) (*Workspace, error) {
 	w.Soul = readFileOr(filepath.Join(dir, "SOUL.md"), "")
 	w.User = readFileOr(filepath.Join(dir, "USER.md"), "")
 	w.Instructions = readFileOr(filepath.Join(dir, "INSTRUCTIONS.md"), "")
+	w.Boot = readFileOr(filepath.Join(dir, "BOOT.md"), "")
+	w.Heartbeat = readFileOr(filepath.Join(dir, "HEARTBEAT.md"), "")
 
 	identityPath := filepath.Join(dir, "IDENTITY.toml")
 	if data, err := os.ReadFile(identityPath); err == nil {

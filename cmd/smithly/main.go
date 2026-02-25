@@ -35,6 +35,8 @@ func main() {
 		cmdStart()
 	case "chat":
 		cmdChat()
+	case "agent":
+		cmdAgent()
 	case "audit":
 		cmdAudit()
 	case "doctor":
@@ -57,6 +59,7 @@ Commands:
   init      First-time setup wizard
   start     Start gateway + agents (HTTP API)
   chat      Interactive terminal chat with an agent
+  agent     Manage agents (list, add, remove)
   audit     Show audit log
   doctor    Check dependencies
   version   Print version
@@ -87,57 +90,7 @@ func cmdInit() {
 		agentName = "assistant"
 	}
 
-	// LLM provider
-	fmt.Println()
-	fmt.Println("LLM Provider:")
-	fmt.Println("  1. OpenAI")
-	fmt.Println("  2. Anthropic (via OpenAI-compatible)")
-	fmt.Println("  3. OpenRouter")
-	fmt.Println("  4. Ollama (local)")
-	fmt.Print("Choice [1]: ")
-	providerChoice, _ := reader.ReadString('\n')
-	providerChoice = strings.TrimSpace(providerChoice)
-
-	var baseURL, provider string
-	switch providerChoice {
-	case "2":
-		baseURL = "https://api.anthropic.com/v1"
-		provider = "anthropic"
-	case "3":
-		baseURL = "https://openrouter.ai/api/v1"
-		provider = "openrouter"
-	case "4":
-		baseURL = "http://localhost:11434/v1"
-		provider = "ollama"
-	default:
-		baseURL = "https://api.openai.com/v1"
-		provider = "openai"
-	}
-
-	// Model
-	var defaultModel string
-	switch provider {
-	case "anthropic":
-		defaultModel = "claude-sonnet-4-5-20250514"
-	case "ollama":
-		defaultModel = "llama3.2"
-	default:
-		defaultModel = "gpt-4o"
-	}
-	fmt.Printf("\nModel [%s]: ", defaultModel)
-	model, _ := reader.ReadString('\n')
-	model = strings.TrimSpace(model)
-	if model == "" {
-		model = defaultModel
-	}
-
-	// API key
-	var apiKey string
-	if provider != "ollama" {
-		fmt.Print("\nAPI key: ")
-		apiKey, _ = reader.ReadString('\n')
-		apiKey = strings.TrimSpace(apiKey)
-	}
+	provider, baseURL, model, apiKey := promptLLMConfig(reader)
 
 	// Search provider (Brave API key)
 	fmt.Print("\nBrave Search API key (free at https://brave.com/search/api/, or press Enter to skip): ")
@@ -186,6 +139,10 @@ func cmdStart() {
 
 	gw := gateway.New(cfg.Gateway.Bind, cfg.Gateway.Port, cfg.Gateway.Token, cfg.Gateway.RateLimit, store)
 
+	// Graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// Register agents
 	for _, ac := range cfg.Agents {
 		a, err := loadAgent(ac, cfg, store)
@@ -194,11 +151,22 @@ func cmdStart() {
 		}
 		gw.RegisterAgent(a)
 		log.Printf("registered agent: %s (model: %s)", a.ID, a.Model)
-	}
 
-	// Graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		// Run BOOT.md if present
+		if a.Workspace.Boot != "" {
+			log.Printf("running BOOT.md for %s...", a.ID)
+			if _, err := a.Boot(ctx, nil); err != nil {
+				log.Printf("warning: boot for %s failed: %v", a.ID, err)
+			}
+		}
+
+		// Start heartbeat if configured
+		if ac.Heartbeat != nil && ac.Heartbeat.Enabled && a.Workspace.Heartbeat != "" {
+			hc := agent.ParseHeartbeatConfig(ac.Heartbeat.Interval, ac.Heartbeat.QuietHours)
+			a.StartHeartbeat(ctx, hc)
+			log.Printf("heartbeat started for %s (every %s)", a.ID, hc.Interval)
+		}
+	}
 
 	go func() {
 		sig := make(chan os.Signal, 1)
@@ -251,6 +219,178 @@ func cmdChat() {
 	if err := cli.Run(context.Background()); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// cmdAgent manages agents (list, add, remove).
+func cmdAgent() {
+	if len(os.Args) < 3 {
+		fmt.Println(`Usage: smithly agent <subcommand>
+
+Subcommands:
+  list      List all configured agents
+  add       Add a new agent (interactive)
+  remove    Remove an agent by ID`)
+		return
+	}
+
+	switch os.Args[2] {
+	case "list":
+		cmdAgentList()
+	case "add":
+		cmdAgentAdd()
+	case "remove":
+		cmdAgentRemove()
+	default:
+		fmt.Fprintf(os.Stderr, "unknown agent subcommand: %s\n", os.Args[2])
+		os.Exit(1)
+	}
+}
+
+func cmdAgentList() {
+	cfg, err := config.Load("smithly.toml")
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	if len(cfg.Agents) == 0 {
+		fmt.Println("No agents configured.")
+		return
+	}
+
+	fmt.Printf("%-20s %-25s %-12s %s\n", "ID", "MODEL", "PROVIDER", "WORKSPACE")
+	for _, a := range cfg.Agents {
+		provider := a.Provider
+		if provider == "" {
+			provider = "openai"
+		}
+		toolInfo := ""
+		if len(a.Tools) > 0 {
+			toolInfo = fmt.Sprintf(" (tools: %s)", strings.Join(a.Tools, ", "))
+		}
+		fmt.Printf("%-20s %-25s %-12s %s%s\n", a.ID, a.Model, provider, a.Workspace, toolInfo)
+	}
+}
+
+func cmdAgentAdd() {
+	dir, _ := os.Getwd()
+	configPath := filepath.Join(dir, "smithly.toml")
+
+	if _, err := os.Stat(configPath); err != nil {
+		log.Fatal("smithly.toml not found. Run 'smithly init' first.")
+	}
+
+	// Check for duplicate IDs
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	reader := bufio.NewReader(os.Stdin)
+
+	fmt.Print("Agent name: ")
+	agentName, _ := reader.ReadString('\n')
+	agentName = strings.TrimSpace(agentName)
+	if agentName == "" {
+		log.Fatal("Agent name is required")
+	}
+
+	for _, a := range cfg.Agents {
+		if a.ID == agentName {
+			log.Fatalf("Agent %q already exists", agentName)
+		}
+	}
+
+	provider, baseURL, model, apiKey := promptLLMConfig(reader)
+
+	wsPath := filepath.Join("workspaces", agentName)
+	os.MkdirAll(filepath.Join(dir, wsPath), 0755)
+
+	writeIfMissing(filepath.Join(dir, wsPath, "SOUL.md"),
+		"You are a helpful, thoughtful AI assistant. You communicate clearly and concisely.")
+	writeIfMissing(filepath.Join(dir, wsPath, "IDENTITY.toml"),
+		fmt.Sprintf("name = %q\nemoji = \"🤖\"\n", agentName))
+
+	agentCfg := config.AgentConfig{
+		ID:        agentName,
+		Model:     model,
+		Workspace: wsPath,
+		Provider:  provider,
+		APIKey:    apiKey,
+		BaseURL:   baseURL,
+	}
+
+	if err := config.AppendAgent(configPath, agentCfg); err != nil {
+		log.Fatalf("Failed to add agent: %v", err)
+	}
+
+	fmt.Printf("\nAgent %q added. Chat with: smithly chat %s\n", agentName, agentName)
+}
+
+func cmdAgentRemove() {
+	if len(os.Args) < 4 {
+		fmt.Println("Usage: smithly agent remove <agent-id>")
+		return
+	}
+
+	agentID := os.Args[3]
+	configPath := "smithly.toml"
+
+	if err := config.RemoveAgent(configPath, agentID); err != nil {
+		log.Fatalf("Failed to remove agent: %v", err)
+	}
+
+	fmt.Printf("Agent %q removed from config.\n", agentID)
+	fmt.Printf("Note: workspace directory was not deleted. Remove manually if desired.\n")
+}
+
+// promptLLMConfig runs the interactive LLM provider/model/key prompts.
+func promptLLMConfig(reader *bufio.Reader) (provider, baseURL, model, apiKey string) {
+	fmt.Println("\nLLM Provider:")
+	fmt.Println("  1. OpenAI")
+	fmt.Println("  2. Anthropic (via OpenAI-compatible)")
+	fmt.Println("  3. OpenRouter")
+	fmt.Println("  4. Ollama (local)")
+	fmt.Print("Choice [1]: ")
+	choice, _ := reader.ReadString('\n')
+	choice = strings.TrimSpace(choice)
+
+	switch choice {
+	case "2":
+		baseURL = "https://api.anthropic.com/v1"
+		provider = "anthropic"
+	case "3":
+		baseURL = "https://openrouter.ai/api/v1"
+		provider = "openrouter"
+	case "4":
+		baseURL = "http://localhost:11434/v1"
+		provider = "ollama"
+	default:
+		baseURL = "https://api.openai.com/v1"
+		provider = "openai"
+	}
+
+	var defaultModel string
+	switch provider {
+	case "anthropic":
+		defaultModel = "claude-sonnet-4-6-20250514"
+	case "ollama":
+		defaultModel = "llama3.2"
+	default:
+		defaultModel = "gpt-4o"
+	}
+	fmt.Printf("\nModel [%s]: ", defaultModel)
+	model, _ = reader.ReadString('\n')
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = defaultModel
+	}
+
+	if provider != "ollama" {
+		fmt.Print("\nAPI key: ")
+		apiKey, _ = reader.ReadString('\n')
+		apiKey = strings.TrimSpace(apiKey)
+	}
+	return
 }
 
 // cmdAudit shows the audit log.
@@ -361,9 +501,11 @@ func loadAgent(ac config.AgentConfig, cfg *config.Config, store db.Store) (*agen
 	}
 
 	a := agent.New(ac.ID, ac.Model, ac.BaseURL, ac.APIKey, ws, store)
+	a.MaxContext = ac.MaxContext
+	a.TokenLimit = ac.TokenLimit
 
-	// Register built-in tools
-	registerTools(a.Tools, cfg.Search)
+	// Register built-in tools (filtered by agent's tool config)
+	registerTools(a.Tools, cfg.Search, ac.Tools)
 
 	// Ensure agent exists in DB
 	if _, err := store.GetAgent(context.Background(), ac.ID); err != nil {
@@ -377,7 +519,16 @@ func loadAgent(ac config.AgentConfig, cfg *config.Config, store db.Store) (*agen
 	return a, nil
 }
 
-func registerTools(registry *tools.Registry, searchCfg config.SearchConfig) {
+func registerTools(registry *tools.Registry, searchCfg config.SearchConfig, allowedTools []string) {
+	// Build allowed set (empty = all allowed)
+	allowed := make(map[string]bool)
+	for _, t := range allowedTools {
+		allowed[t] = true
+	}
+	isAllowed := func(name string) bool {
+		return len(allowed) == 0 || allowed[name]
+	}
+
 	// Pick search provider based on config
 	var searchProvider tools.SearchProvider
 	switch searchCfg.Provider {
@@ -396,13 +547,21 @@ func registerTools(registry *tools.Registry, searchCfg config.SearchConfig) {
 			searchProvider = tools.NewDuckDuckGoSearch()
 		}
 	}
-	registry.Register(tools.NewSearchWithProvider(searchProvider))
-	registry.Register(tools.NewFetch())
-	registry.Register(tools.NewBash())
-	registry.Register(tools.NewReadFile(""))
-	registry.Register(tools.NewWriteFile(""))
-	registry.Register(tools.NewListFiles(""))
-	registry.Register(tools.NewClaudeCode())
+
+	allTools := []tools.Tool{
+		tools.NewSearchWithProvider(searchProvider),
+		tools.NewFetch(),
+		tools.NewBash(),
+		tools.NewReadFile(""),
+		tools.NewWriteFile(""),
+		tools.NewListFiles(""),
+		tools.NewClaudeCode(),
+	}
+	for _, t := range allTools {
+		if isAllowed(t.Name()) {
+			registry.Register(t)
+		}
+	}
 }
 
 func writeIfMissing(path, content string) {

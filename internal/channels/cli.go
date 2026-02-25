@@ -82,6 +82,10 @@ func (c *CLI) Run(ctx context.Context) error {
 				answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
 				return answer == "y" || answer == "yes"
 			},
+			OnPaused: func(used int, limit int) {
+				fmt.Fprintf(c.Output, "\n  [paused] Token limit reached: %d / %d tokens used.\n", used, limit)
+				fmt.Fprintf(c.Output, "  Agent will not respond until the limit is raised or reset.\n\n")
+			},
 		}
 
 		_, err := c.Agent.Chat(ctx, input, cb)

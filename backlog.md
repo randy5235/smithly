@@ -66,11 +66,12 @@
 ## Phase 2: Multi-Agent + Soul
 
 ### Multi-Agent
+- [x] Per-agent LLM model configuration
+- [x] Per-agent tool configuration (`tools = ["search", "fetch"]`)
+- [x] Agent management CLI (`smithly agent add/remove/list`)
 - [ ] Multiple agent loops under one gateway
 - [ ] Per-agent workspace isolation (soul, identity, memory, permissions)
-- [ ] Per-agent LLM model configuration
 - [ ] Per-agent skill bindings
-- [ ] Agent management CLI (`smithly agent add/remove/list/edit`)
 
 ### Channel Bindings
 - [ ] Route channels → agents via binding rules
@@ -78,13 +79,14 @@
 - [ ] Default catch-all agent
 
 ### Workspace Files
-- [ ] SOUL.md — behavioral philosophy
-- [ ] IDENTITY.toml — external presentation (name, emoji, avatar)
-- [ ] USER.md — user info/preferences
-- [ ] INSTRUCTIONS.md — operating rules
-- [ ] HEARTBEAT.md — recurring task checklist
-- [ ] BOOT.md — startup checklist
-- [ ] System prompt assembly with token limit cap
+- [x] SOUL.md — behavioral philosophy
+- [x] IDENTITY.toml — external presentation (name, emoji, avatar)
+- [x] USER.md — user info/preferences
+- [x] INSTRUCTIONS.md — operating rules
+- [x] HEARTBEAT.md — recurring task checklist (configurable interval + quiet hours)
+- [x] BOOT.md — startup checklist (runs on agent start)
+- [x] System prompt assembly with context window token estimation + history truncation
+- [x] Configurable max context window per agent (`max_context`)
 
 ---
 
@@ -177,13 +179,7 @@
 
 ---
 
-## Phase 7: Heartbeat + Memory
-
-### Heartbeat
-- [ ] Per-agent scheduler (goroutine)
-- [ ] HEARTBEAT.md loading into context on tick
-- [ ] Quiet hours support
-- [ ] BOOT.md — run on agent startup
+## Phase 7: Memory + Search (Heartbeat moved to Phase 2 ✅)
 
 ### Memory
 - [ ] Vector search (sqlite-vec or pure Go KNN)
