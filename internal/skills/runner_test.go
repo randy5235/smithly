@@ -30,7 +30,7 @@ echo "{\"greeting\": \"hello from bash\"}"
 		},
 	}
 
-	runner := NewRunner(5 * time.Second)
+	runner := NewRunner(5*time.Second, nil, nil)
 	result, err := runner.Run(context.Background(), skill, json.RawMessage(`{}`), os.Environ())
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +62,7 @@ echo "$TEST_TOKEN"
 		},
 	}
 
-	runner := NewRunner(5 * time.Second)
+	runner := NewRunner(5*time.Second, nil, nil)
 	env := []string{"TEST_TOKEN=secret-123", "PATH=" + os.Getenv("PATH")}
 	result, err := runner.Run(context.Background(), skill, nil, env)
 	if err != nil {
@@ -93,7 +93,7 @@ exit 1
 		},
 	}
 
-	runner := NewRunner(5 * time.Second)
+	runner := NewRunner(5*time.Second, nil, nil)
 	result, err := runner.Run(context.Background(), skill, nil, os.Environ())
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +113,7 @@ func TestRunnerNotCodeSkill(t *testing.T) {
 		},
 	}
 
-	runner := NewRunner(5 * time.Second)
+	runner := NewRunner(5*time.Second, nil, nil)
 	_, err := runner.Run(context.Background(), skill, nil, nil)
 	if err == nil {
 		t.Error("expected error for non-code skill")
@@ -128,7 +128,7 @@ func TestRunnerMissingCodeConfig(t *testing.T) {
 		},
 	}
 
-	runner := NewRunner(5 * time.Second)
+	runner := NewRunner(5*time.Second, nil, nil)
 	_, err := runner.Run(context.Background(), skill, nil, nil)
 	if err == nil {
 		t.Error("expected error for missing code config")
@@ -155,7 +155,7 @@ sleep 60
 	}
 
 	start := time.Now()
-	runner := NewRunner(200 * time.Millisecond)
+	runner := NewRunner(200*time.Millisecond, nil, nil)
 	result, err := runner.Run(context.Background(), skill, nil, os.Environ())
 	elapsed := time.Since(start)
 
@@ -170,8 +170,79 @@ sleep 60
 }
 
 func TestRunnerDefaultTimeout(t *testing.T) {
-	runner := NewRunner(0)
+	runner := NewRunner(0, nil, nil)
 	if runner.timeout != 30*time.Second {
 		t.Errorf("default timeout = %v, want 30s", runner.timeout)
 	}
+}
+
+func TestRunnerSidecarEnvInjection(t *testing.T) {
+	dir := t.TempDir()
+
+	script := `#!/bin/bash
+echo "API=$SMITHLY_API TOKEN=$SMITHLY_TOKEN"
+`
+	os.WriteFile(filepath.Join(dir, "main.sh"), []byte(script), 0755)
+
+	skill := &Skill{
+		Path: dir,
+		Manifest: Manifest{
+			Skill: SkillMeta{Name: "test-skill", Type: "code"},
+			Code: &CodeSkillConfig{
+				Runtime:    "bash",
+				Entrypoint: "main.sh",
+			},
+		},
+	}
+
+	sc := &mockSidecar{url: "http://127.0.0.1:18791"}
+	runner := NewRunner(5*time.Second, sc, nil)
+	env := []string{"PATH=" + os.Getenv("PATH")}
+	result, err := runner.Run(context.Background(), skill, nil, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExitCode != 0 {
+		t.Errorf("exit code = %d, stderr: %s", result.ExitCode, result.Error)
+	}
+	// Output should contain the sidecar URL and a token
+	if !contains(result.Output, "API=http://127.0.0.1:18791") {
+		t.Errorf("output missing SMITHLY_API: %q", result.Output)
+	}
+	if !contains(result.Output, "TOKEN=mock-token-") {
+		t.Errorf("output missing SMITHLY_TOKEN: %q", result.Output)
+	}
+	if !sc.revoked {
+		t.Error("expected token to be revoked after run")
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsSubstr(s, substr))
+}
+
+func containsSubstr(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
+
+type mockSidecar struct {
+	url     string
+	revoked bool
+}
+
+func (m *mockSidecar) IssueToken(skill string, ttl time.Duration) string {
+	return "mock-token-" + skill
+}
+
+func (m *mockSidecar) RevokeToken(token string) {
+	m.revoked = true
+}
+
+func (m *mockSidecar) URL() string {
+	return m.url
 }

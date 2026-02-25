@@ -39,6 +39,11 @@ func (s *Store) Close() error {
 	return s.conn.Close()
 }
 
+// DB returns the underlying *sql.DB, for use by the object store layer.
+func (s *Store) DB() *sql.DB {
+	return s.conn
+}
+
 // Migrate runs all pending SQL migration files in order.
 func (s *Store) Migrate(ctx context.Context) error {
 	// Ensure schema_version table exists for tracking

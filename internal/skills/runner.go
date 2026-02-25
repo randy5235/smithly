@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
+
+	"smithly.dev/internal/config"
 )
 
 // CodeSkillConfig is the manifest section for code skills.
@@ -24,17 +27,30 @@ type RunResult struct {
 	ExitCode int    `json:"exit_code"`
 }
 
+// SidecarIface is the subset of sidecar.Sidecar used by the runner.
+type SidecarIface interface {
+	IssueToken(skill string, ttl time.Duration) string
+	RevokeToken(token string)
+	URL() string
+}
+
 // Runner executes code skills as subprocesses.
 type Runner struct {
-	timeout time.Duration
+	timeout    time.Duration
+	sidecar    SidecarIface
+	dataStores []config.DataStoreConfig
 }
 
 // NewRunner creates a code skill runner with the given execution timeout.
-func NewRunner(timeout time.Duration) *Runner {
+func NewRunner(timeout time.Duration, sidecar SidecarIface, stores []config.DataStoreConfig) *Runner {
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
-	return &Runner{timeout: timeout}
+	return &Runner{
+		timeout:    timeout,
+		sidecar:    sidecar,
+		dataStores: stores,
+	}
 }
 
 // Run executes a code skill with JSON input on stdin and captures JSON output on stdout.
@@ -53,6 +69,32 @@ func (r *Runner) Run(ctx context.Context, skill *Skill, input json.RawMessage, e
 	if cfg.Build != "" {
 		if err := r.build(ctx, skill.Path, cfg.Build, env); err != nil {
 			return nil, fmt.Errorf("build: %w", err)
+		}
+	}
+
+	// Inject sidecar env vars
+	if r.sidecar != nil {
+		token := r.sidecar.IssueToken(skill.Manifest.Skill.Name, r.timeout+30*time.Second)
+		defer r.sidecar.RevokeToken(token)
+		env = append(env,
+			"SMITHLY_API="+r.sidecar.URL(),
+			"SMITHLY_TOKEN="+token,
+		)
+	}
+
+	// Inject data store env vars — skill connects directly
+	dbTypeSet := false
+	for _, ds := range r.dataStores {
+		prefix := "SMITHLY_" + strings.ToUpper(ds.Type)
+		switch ds.Type {
+		case "sqlite":
+			env = append(env, prefix+"_PATH="+ds.Path)
+		default:
+			env = append(env, prefix+"_URL="+ds.URL)
+		}
+		if !dbTypeSet {
+			env = append(env, "SMITHLY_DB_TYPE="+ds.Type)
+			dbTypeSet = true
 		}
 	}
 

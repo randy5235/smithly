@@ -19,6 +19,9 @@ type Config struct {
 	OAuth2      []OAuth2Config    `toml:"oauth2"`
 	Notify      NotifyConfig      `toml:"notify"`
 	Credentials CredentialsConfig `toml:"credentials"`
+	Sidecar     SidecarConfig     `toml:"sidecar"`
+	DataStores  []DataStoreConfig `toml:"datastore"`
+	Secrets     []SecretConfig    `toml:"secret"`
 	Agents      []AgentConfig     `toml:"agents"`
 }
 
@@ -93,6 +96,25 @@ type NotifyConfig struct {
 type CredentialsConfig struct {
 	Provider string `toml:"provider"` // "file" (default)
 	Path     string `toml:"path"`     // file path for file provider
+}
+
+type SidecarConfig struct {
+	Bind string `toml:"bind"` // default "127.0.0.1"
+	Port int    `toml:"port"` // default 18791
+}
+
+type DataStoreConfig struct {
+	Type string `toml:"type"` // "sqlite", "postgres", "redis", "mongodb", "elasticsearch"
+	Path string `toml:"path"` // for sqlite
+	URL  string `toml:"url"`  // for everything else
+}
+
+// SecretConfig defines a secret available to skills via the sidecar API.
+// Skills request secrets via GET /secrets/{name} — values never touch env vars.
+type SecretConfig struct {
+	Name  string `toml:"name"`            // secret name, used in GET /secrets/{name}
+	Value string `toml:"value,omitempty"` // literal value
+	Env   string `toml:"env,omitempty"`   // read from controller's environment variable
 }
 
 func DefaultConfig() Config {

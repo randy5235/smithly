@@ -23,7 +23,9 @@ import (
 	"smithly.dev/internal/db"
 	"smithly.dev/internal/db/sqlite"
 	"smithly.dev/internal/gateway"
+	"smithly.dev/internal/sidecar"
 	"smithly.dev/internal/skills"
+	"smithly.dev/internal/store"
 	"smithly.dev/internal/tools"
 	"smithly.dev/internal/workspace"
 )
@@ -146,11 +148,14 @@ func cmdInit() {
 
 // cmdStart runs the gateway and all agents.
 func cmdStart() {
-	cfg, store := loadConfig()
-	defer store.Close()
+	cfg, dbStore := loadConfig()
+	defer dbStore.Close()
 	credStore := loadCredentialStore(cfg)
 
-	gw := gateway.New(cfg.Gateway.Bind, cfg.Gateway.Port, cfg.Gateway.Token, cfg.Gateway.RateLimit, store)
+	gw := gateway.New(cfg.Gateway.Bind, cfg.Gateway.Port, cfg.Gateway.Token, cfg.Gateway.RateLimit, dbStore)
+
+	// Start sidecar
+	sc := startSidecar(cfg, dbStore, credStore)
 
 	// Graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -158,7 +163,7 @@ func cmdStart() {
 
 	// Register agents
 	for _, ac := range cfg.Agents {
-		a, err := loadAgent(ac, cfg, store, credStore)
+		a, err := loadAgent(ac, cfg, dbStore, credStore)
 		if err != nil {
 			log.Fatalf("Failed to load agent %s: %v", ac.ID, err)
 		}
@@ -186,11 +191,13 @@ func cmdStart() {
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 		<-sig
 		log.Println("shutting down...")
+		sc.Shutdown(ctx)
 		gw.Shutdown(ctx)
 		cancel()
 	}()
 
 	fmt.Printf("\nGateway: http://%s:%d\n", cfg.Gateway.Bind, cfg.Gateway.Port)
+	fmt.Printf("Sidecar: %s\n", sc.URL())
 	fmt.Printf("Token:   %s\n\n", cfg.Gateway.Token)
 
 	if err := gw.Start(); err != nil && ctx.Err() == nil {
@@ -1067,4 +1074,90 @@ func writeIfMissing(path, content string) {
 		return
 	}
 	os.WriteFile(path, []byte(content+"\n"), 0644)
+}
+
+// startSidecar creates and starts the sidecar HTTP server in a goroutine.
+func startSidecar(cfg *config.Config, dbStore db.Store, credStore credentials.Store) *sidecar.Sidecar {
+	// Build OAuth2 tool for sidecar
+	var oauth2Tool *tools.OAuth2Tool
+	if len(cfg.OAuth2) > 0 && credStore != nil {
+		oauth2Tool = tools.NewOAuth2Tool(cfg.OAuth2, credStore)
+	}
+
+	// Build notify provider for sidecar
+	var notifyProvider tools.NotifyProvider
+	if cfg.Notify.NtfyTopic != "" {
+		notifyProvider = tools.NewNtfyProvider(cfg.Notify.NtfyTopic, cfg.Notify.NtfyServer)
+	}
+
+	// Build object store — uses a separate SQLite file so direct-connecting
+	// skills can't access the immutable store tables.
+	var objStore store.Store
+	storeDBPath := strings.TrimSuffix(cfg.Storage.Database, ".db") + "_store.db"
+	storeDB, err := sqlite.New(storeDBPath)
+	if err != nil {
+		log.Printf("warning: could not open store DB %s: %v", storeDBPath, err)
+	} else {
+		if err := storeDB.Migrate(context.Background()); err != nil {
+			log.Printf("warning: store DB migration failed: %v", err)
+		}
+		objStore = store.NewSQLite(storeDB.DB())
+	}
+
+	// Build secret store from config
+	secrets := loadSecretStore(cfg)
+
+	bind := cfg.Sidecar.Bind
+	if bind == "" {
+		bind = "127.0.0.1"
+	}
+	port := cfg.Sidecar.Port
+	if port == 0 {
+		port = 18791
+	}
+
+	sc := sidecar.New(sidecar.Config{
+		Bind:     bind,
+		Port:     port,
+		OAuth2:   oauth2Tool,
+		Notify:   notifyProvider,
+		Audit:    dbStore,
+		ObjStore: objStore,
+		Secrets:  secrets,
+	})
+
+	go func() {
+		log.Printf("sidecar listening on %s", sc.URL())
+		if err := sc.Start(); err != nil {
+			log.Printf("sidecar error: %v", err)
+		}
+	}()
+
+	return sc
+}
+
+// configSecretStore implements sidecar.SecretStore from config entries.
+type configSecretStore struct {
+	secrets map[string]string
+}
+
+func (s *configSecretStore) GetSecret(name string) (string, bool) {
+	v, ok := s.secrets[name]
+	return v, ok
+}
+
+func loadSecretStore(cfg *config.Config) sidecar.SecretStore {
+	secrets := make(map[string]string, len(cfg.Secrets))
+	for _, s := range cfg.Secrets {
+		if s.Env != "" {
+			// Read from controller's environment — skill never sees the env var
+			secrets[s.Name] = os.Getenv(s.Env)
+		} else {
+			secrets[s.Name] = s.Value
+		}
+	}
+	if len(secrets) == 0 {
+		return nil
+	}
+	return &configSecretStore{secrets: secrets}
 }
