@@ -122,18 +122,6 @@
 - [x] read_skill tool: 3 tests (read existing, not found, empty name)
 - [x] Example skills integration: loads all 3 from disk, verifies triggers + summary
 
-### Deferred to Phase 3b: Code Skills
-- [ ] Ed25519 key generation (`smithly key generate`)
-- [ ] Key management (`smithly key list/export`)
-- [ ] Skill signing (`smithly skill sign`)
-- [ ] Signature verification on install
-- [ ] File hash verification on every invocation
-- [ ] AST-based static scanner
-- [ ] Scan report generation
-- [ ] Install flow: verify → scan → user review → approve
-- [ ] Dependency declaration — requires code skills, tools, domains
-- [ ] Injection scanner — content firewall patterns against Markdown at install time
-- [ ] Author identity tracking — tied to author account
 
 ---
 
@@ -345,6 +333,27 @@
 - [ ] Keystroke sanitization (no credential entry without explicit approval)
 - [ ] Session isolation — cloud desktops are fresh per task
 - [ ] Full audit log of every click, keystroke, screenshot
+
+---
+
+## Phase 12: Code Skills + Trust Chain
+
+### Signing + Verification
+- [ ] Ed25519 key generation (`smithly key generate`)
+- [ ] Key management (`smithly key list/export`)
+- [ ] Skill signing (`smithly skill sign`)
+- [ ] Signature verification on install
+- [ ] File hash verification on every invocation
+- [ ] Author identity tracking — tied to author account
+
+### Static Analysis
+- [ ] AST-based static scanner
+- [ ] Scan report generation
+- [ ] Injection scanner — content firewall patterns against Markdown at install time
+
+### Install + Runtime
+- [ ] Install flow: verify → scan → user review → approve
+- [ ] Dependency declaration — requires code skills, tools, domains
 
 ---
 
