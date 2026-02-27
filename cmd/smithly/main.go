@@ -169,8 +169,12 @@ func cmdStart() {
 	defer cancel()
 
 	// Register agents
+	var proxyAddr string
+	if gkProxy != nil {
+		proxyAddr = gkProxy.Addr()
+	}
 	for _, ac := range cfg.Agents {
-		a, err := loadAgent(ac, cfg, dbStore, credStore)
+		a, err := loadAgent(ac, cfg, dbStore, credStore, sc, proxyAddr)
 		if err != nil {
 			log.Fatalf("Failed to load agent %s: %v", ac.ID, err)
 		}
@@ -244,7 +248,7 @@ func cmdChat() {
 		log.Fatal("No agents configured. Run 'smithly init' first.")
 	}
 
-	a, err := loadAgent(*ac, cfg, store, credStore)
+	a, err := loadAgent(*ac, cfg, store, credStore, nil, "")
 	if err != nil {
 		log.Fatalf("Failed to load agent: %v", err)
 	}
@@ -1099,7 +1103,7 @@ func loadCredentialStore(cfg *config.Config) credentials.Store {
 	return credentials.NewFileStore(path)
 }
 
-func loadAgent(ac config.AgentConfig, cfg *config.Config, store db.Store, credStore credentials.Store) (*agent.Agent, error) {
+func loadAgent(ac config.AgentConfig, cfg *config.Config, store db.Store, credStore credentials.Store, sc skills.SidecarIface, proxyAddr string) (*agent.Agent, error) {
 	ws, err := workspace.Load(ac.Workspace)
 	if err != nil {
 		return nil, fmt.Errorf("load workspace for %s: %w", ac.ID, err)
@@ -1147,6 +1151,13 @@ func loadAgent(ac config.AgentConfig, cfg *config.Config, store db.Store, credSt
 		}
 	}
 	a.Skills = skillRegistry
+
+	// Create code skill runner with proxy gating
+	runner := skills.NewRunner(30*time.Second, sc, cfg.DataStores)
+	if proxyAddr != "" {
+		runner.SetProxy(proxyAddr)
+	}
+	a.CodeRunner = runner
 
 	// Populate services info for system prompt injection
 	var svc agent.Services

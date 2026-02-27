@@ -217,6 +217,82 @@ echo "API=$SMITHLY_API TOKEN=$SMITHLY_TOKEN"
 	}
 }
 
+func TestRunnerProxyEnvInjection(t *testing.T) {
+	dir := t.TempDir()
+
+	script := `#!/bin/bash
+echo "HTTP=$HTTP_PROXY HTTPS=$HTTPS_PROXY http=$http_proxy https=$https_proxy"
+`
+	os.WriteFile(filepath.Join(dir, "main.sh"), []byte(script), 0755)
+
+	skill := &Skill{
+		Path: dir,
+		Manifest: Manifest{
+			Skill: SkillMeta{Name: "test", Type: "code"},
+			Code: &CodeSkillConfig{
+				Runtime:    "bash",
+				Entrypoint: "main.sh",
+			},
+		},
+	}
+
+	runner := NewRunner(5*time.Second, nil, nil)
+	runner.SetProxy("127.0.0.1:18792")
+	env := []string{"PATH=" + os.Getenv("PATH")}
+	result, err := runner.Run(context.Background(), skill, nil, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExitCode != 0 {
+		t.Errorf("exit code = %d, stderr: %s", result.ExitCode, result.Error)
+	}
+
+	expected := "http://127.0.0.1:18792"
+	if !contains(result.Output, "HTTP="+expected) {
+		t.Errorf("output missing HTTP_PROXY: %q", result.Output)
+	}
+	if !contains(result.Output, "HTTPS="+expected) {
+		t.Errorf("output missing HTTPS_PROXY: %q", result.Output)
+	}
+	if !contains(result.Output, "http="+expected) {
+		t.Errorf("output missing http_proxy: %q", result.Output)
+	}
+	if !contains(result.Output, "https="+expected) {
+		t.Errorf("output missing https_proxy: %q", result.Output)
+	}
+}
+
+func TestRunnerNoProxyWhenUnset(t *testing.T) {
+	dir := t.TempDir()
+
+	script := `#!/bin/bash
+echo "HTTP=$HTTP_PROXY"
+`
+	os.WriteFile(filepath.Join(dir, "main.sh"), []byte(script), 0755)
+
+	skill := &Skill{
+		Path: dir,
+		Manifest: Manifest{
+			Skill: SkillMeta{Name: "test", Type: "code"},
+			Code: &CodeSkillConfig{
+				Runtime:    "bash",
+				Entrypoint: "main.sh",
+			},
+		},
+	}
+
+	runner := NewRunner(5*time.Second, nil, nil)
+	// No SetProxy call
+	env := []string{"PATH=" + os.Getenv("PATH")}
+	result, err := runner.Run(context.Background(), skill, nil, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output != "HTTP=\n" {
+		t.Errorf("expected empty HTTP_PROXY, got %q", result.Output)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsSubstr(s, substr))
 }

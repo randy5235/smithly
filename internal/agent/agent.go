@@ -37,6 +37,7 @@ type Agent struct {
 	Tools       *tools.Registry
 	Skills      *skills.Registry
 	Services    *Services
+	CodeRunner  *skills.Runner
 	client      *http.Client
 }
 

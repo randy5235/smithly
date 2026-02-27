@@ -4,6 +4,7 @@ package gatekeeper
 
 import (
 	"context"
+	"net"
 	"strings"
 
 	"smithly.dev/internal/db"
@@ -91,10 +92,10 @@ func (g *Gatekeeper) SeedSkillDomains(ctx context.Context, domains []string, ski
 }
 
 // normalizeDomain lowercases the domain and strips any port suffix.
+// Uses net.SplitHostPort for correct IPv6 handling.
 func normalizeDomain(domain string) string {
 	domain = strings.ToLower(strings.TrimSpace(domain))
-	// Strip port
-	if host, _, ok := strings.Cut(domain, ":"); ok {
+	if host, _, err := net.SplitHostPort(domain); err == nil {
 		domain = host
 	}
 	return domain
