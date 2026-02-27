@@ -208,7 +208,7 @@
 - [x] `smithly domain list/allow/deny/log`
 - [x] Gatekeeper proxy launched alongside sidecar in `cmdStart`
 - [x] Runner wired with SetProxy — code skills get HTTP_PROXY/HTTPS_PROXY env vars
-- [x] Agent.CodeRunner created in loadAgent, ready for code skill execution tool (future phase)
+- [x] Agent.CodeRunner created in loadAgent, wired to run_code_skill + skill-based heartbeat
 - [x] All access (allow + deny) logged to audit_log with domain field
 
 ### Config
@@ -223,31 +223,66 @@
 
 ---
 
-## Phase 6: Sandbox Providers
+## Phase 6: Sandbox Providers ✅
 
 ### Interface
-- [ ] SandboxProvider interface (Run, Destroy, Available)
+- [x] `sandbox.Provider` interface (Name, Available, Run)
+- [x] `sandbox.RunOpts` — skill, input, env, timeout
+- [x] `sandbox.RunResult` — output, error, exit code
+- [x] Factory: `NewProvider()` creates provider from config
 
-### Docker Provider (default)
-- [ ] Ephemeral containers (`--rm`)
-- [ ] Skill code mounted read-only, workspace read-write
-- [ ] Internal Docker network (no direct internet)
-- [ ] All traffic through gatekeeper proxy
-- [ ] Resource limits (memory, CPU)
-- [ ] Storage sidecar integration
+### Docker Provider
+- [x] Ephemeral containers (`--rm`, `--init`)
+- [x] Runtime → Docker image mapping (python3, node, bash, go, bun)
+- [x] Skill directory mounted read-write (build artifacts), read-only for execution
+- [x] Network: "none" by default, "bridge" if proxy/sidecar configured
+- [x] Resource limits (memory, CPU — configurable via `sandbox.memory`, `sandbox.cpus`)
+- [x] Sidecar URL rewrite for container networking (127.0.0.1 → host.docker.internal)
+- [x] Gatekeeper proxy integration (HTTP_PROXY/HTTPS_PROXY)
 
 ### None Provider
-- [ ] Raw shell execution
-- [ ] Scary warning + explicit opt-in
-- [ ] Go-level proxy hooks for fetch/http
-- [ ] Command parsing for curl/wget domain extraction
+- [x] Raw subprocess execution (no isolation)
+- [x] Warning on startup when sandbox.provider = "none"
+- [x] Runtime + entrypoint execution with process group kill on timeout
+- [x] Proxy env var injection for outbound network gating
 
 ### Fly Provider (stub)
-- [ ] Interface implementation
-- [ ] Basic Fly Machine API calls (create, ship code, collect result, destroy)
+- [x] Interface implementation (returns "not yet implemented")
+- [x] `flyctl` availability check
 
 ### Diagnostics
-- [ ] `smithly doctor` — check Docker, Fly, Ollama, KVM availability
+- [x] `smithly doctor` — checks Docker, Fly availability
+
+### Tests
+- [x] EnvConfig: sidecar + data store + proxy env injection
+- [x] NoneProvider: basic execution, exit codes, timeout
+- [x] DockerProvider: image mapping, mount paths, network mode, resource limits
+- [x] FlyProvider: stub behavior
+
+---
+
+## Phase 6.5: Agent-Authored Skills ✅
+
+> The agent writes its own code skills during conversation, tests them,
+> and the heartbeat can run them directly — no LLM, no tokens.
+
+### Tools
+- [x] `write_skill` — create manifest.toml + code file, load into live registry
+- [x] `run_code_skill` — execute a code skill by name via sandbox provider
+- [x] Security: name validation (`[a-zA-Z0-9_-]+`), path traversal rejection in entrypoint
+- [x] Overwrite support — remove old skill from registry, replace on disk
+
+### Skill-Based Heartbeat
+- [x] `skill` field on HeartbeatConfig (config + agent)
+- [x] `StartHeartbeat` branches: skill mode (direct execution) vs chat mode (LLM)
+- [x] `runSkillHeartbeat` — looks up skill, runs via CodeRunner, logs output/errors
+- [x] Config serialization — `rewriteConfig` writes `skill` field
+- [x] Heartbeat starts without HEARTBEAT.md when skill is configured
+
+### Tests
+- [x] run_code_skill: 6 tests (not found, instruction skill, success, non-zero exit, nil input, metadata)
+- [x] write_skill: 9 tests (file creation, registry load, overwrite, invalid name, path traversal, triggers, build, missing fields, metadata)
+- [x] Existing heartbeat tests updated for new ParseHeartbeatConfig signature
 
 ---
 
