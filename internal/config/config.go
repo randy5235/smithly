@@ -74,6 +74,7 @@ type HeartbeatConfig struct {
 	Interval   string `toml:"interval"`
 	QuietHours string `toml:"quiet_hours"`
 	AutoResume bool   `toml:"auto_resume"` // Resume paused agent when window expires (default true)
+	Skill      string `toml:"skill"`       // Run this code skill instead of LLM chat
 }
 
 type SearchConfig struct {
@@ -333,6 +334,9 @@ func rewriteConfig(path string, cfg *Config, agents []AgentConfig) error {
 			}
 			if a.Heartbeat.QuietHours != "" {
 				fmt.Fprintf(f, "quiet_hours = %q\n", a.Heartbeat.QuietHours)
+			}
+			if a.Heartbeat.Skill != "" {
+				fmt.Fprintf(f, "skill = %q\n", a.Heartbeat.Skill)
 			}
 		}
 	}

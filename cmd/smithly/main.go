@@ -191,10 +191,16 @@ func cmdStart() {
 		}
 
 		// Start heartbeat if configured
-		if ac.Heartbeat != nil && ac.Heartbeat.Enabled && a.Workspace.Heartbeat != "" {
-			hc := agent.ParseHeartbeatConfig(ac.Heartbeat.Interval, ac.Heartbeat.QuietHours, ac.Heartbeat.AutoResume)
-			a.StartHeartbeat(ctx, hc)
-			log.Printf("heartbeat started for %s (every %s)", a.ID, hc.Interval)
+		if ac.Heartbeat != nil && ac.Heartbeat.Enabled {
+			if ac.Heartbeat.Skill != "" || a.Workspace.Heartbeat != "" {
+				hc := agent.ParseHeartbeatConfig(ac.Heartbeat.Interval, ac.Heartbeat.QuietHours, ac.Heartbeat.AutoResume, ac.Heartbeat.Skill)
+				a.StartHeartbeat(ctx, hc)
+				if hc.Skill != "" {
+					log.Printf("heartbeat started for %s (skill %q every %s)", a.ID, hc.Skill, hc.Interval)
+				} else {
+					log.Printf("heartbeat started for %s (every %s)", a.ID, hc.Interval)
+				}
+			}
 		}
 	}
 
@@ -1218,7 +1224,7 @@ func loadAgent(ac config.AgentConfig, cfg *config.Config, store db.Store, credSt
 	}
 
 	// Register built-in tools (filtered by agent's tool config)
-	registerTools(a.Tools, cfg, ac.Tools, skillRegistry, credStore)
+	registerTools(a.Tools, cfg, ac.Tools, skillRegistry, credStore, provider, skillsDir)
 
 	// Ensure agent exists in DB
 	if _, err := store.GetAgent(context.Background(), ac.ID); err != nil {
@@ -1232,7 +1238,7 @@ func loadAgent(ac config.AgentConfig, cfg *config.Config, store db.Store, credSt
 	return a, nil
 }
 
-func registerTools(registry *tools.Registry, cfg *config.Config, allowedTools []string, skillRegistry *skills.Registry, credStore credentials.Store) {
+func registerTools(registry *tools.Registry, cfg *config.Config, allowedTools []string, skillRegistry *skills.Registry, credStore credentials.Store, codeRunner sandbox.Provider, skillsDir string) {
 	// Build allowed set (empty = all allowed)
 	allowed := make(map[string]bool)
 	for _, t := range allowedTools {
@@ -1292,6 +1298,12 @@ func registerTools(registry *tools.Registry, cfg *config.Config, allowedTools []
 	// Add read_skill tool if there are skills installed
 	if skillRegistry != nil && len(skillRegistry.All()) > 0 {
 		allTools = append(allTools, tools.NewReadSkill(skillRegistry))
+	}
+
+	// Add code skill tools if sandbox provider is available
+	if codeRunner != nil {
+		allTools = append(allTools, tools.NewRunCodeSkill(skillRegistry, codeRunner))
+		allTools = append(allTools, tools.NewWriteSkill(skillRegistry, skillsDir))
 	}
 	for _, t := range allTools {
 		if isAllowed(t.Name()) {

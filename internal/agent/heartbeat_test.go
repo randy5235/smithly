@@ -10,7 +10,7 @@ import (
 
 func TestParseHeartbeatConfig(t *testing.T) {
 	// Default values
-	hc := agent.ParseHeartbeatConfig("", "", true)
+	hc := agent.ParseHeartbeatConfig("", "", true, "")
 	if hc.Interval != 30*time.Minute {
 		t.Errorf("default interval = %v, want 30m", hc.Interval)
 	}
@@ -19,13 +19,13 @@ func TestParseHeartbeatConfig(t *testing.T) {
 	}
 
 	// Custom interval
-	hc = agent.ParseHeartbeatConfig("1h", "", true)
+	hc = agent.ParseHeartbeatConfig("1h", "", true, "")
 	if hc.Interval != time.Hour {
 		t.Errorf("interval = %v, want 1h", hc.Interval)
 	}
 
 	// Quiet hours
-	hc = agent.ParseHeartbeatConfig("", "22-7", true)
+	hc = agent.ParseHeartbeatConfig("", "22-7", true, "")
 	if hc.QuietStart != 22 {
 		t.Errorf("quiet start = %d, want 22", hc.QuietStart)
 	}
@@ -34,7 +34,7 @@ func TestParseHeartbeatConfig(t *testing.T) {
 	}
 
 	// Both
-	hc = agent.ParseHeartbeatConfig("15m", "9-17", true)
+	hc = agent.ParseHeartbeatConfig("15m", "9-17", true, "")
 	if hc.Interval != 15*time.Minute {
 		t.Errorf("interval = %v, want 15m", hc.Interval)
 	}
