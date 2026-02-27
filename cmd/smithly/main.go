@@ -22,6 +22,7 @@ import (
 	"smithly.dev/internal/credentials"
 	"smithly.dev/internal/db"
 	"smithly.dev/internal/db/sqlite"
+	"smithly.dev/internal/gatekeeper"
 	"smithly.dev/internal/gateway"
 	"smithly.dev/internal/sidecar"
 	"smithly.dev/internal/skills"
@@ -51,6 +52,8 @@ func main() {
 		cmdOAuth2()
 	case "audit":
 		cmdAudit()
+	case "domain":
+		cmdDomain()
 	case "doctor":
 		cmdDoctor()
 	case "version":
@@ -75,6 +78,7 @@ Commands:
   skill     Manage instruction skills (list, add, remove)
   oauth2    Manage OAuth2 providers (auth, list)
   audit     Show audit log
+  domain    Manage network domain allowlist
   doctor    Check dependencies
   version   Print version
 
@@ -157,6 +161,9 @@ func cmdStart() {
 	// Start sidecar
 	sc := startSidecar(cfg, dbStore, credStore)
 
+	// Start gatekeeper proxy
+	gkProxy := startGatekeeper(cfg, dbStore)
+
 	// Graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -191,14 +198,20 @@ func cmdStart() {
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 		<-sig
 		log.Println("shutting down...")
+		if gkProxy != nil {
+			gkProxy.Shutdown(ctx)
+		}
 		sc.Shutdown(ctx)
 		gw.Shutdown(ctx)
 		cancel()
 	}()
 
-	fmt.Printf("\nGateway: http://%s:%d\n", cfg.Gateway.Bind, cfg.Gateway.Port)
-	fmt.Printf("Sidecar: %s\n", sc.URL())
-	fmt.Printf("Token:   %s\n\n", cfg.Gateway.Token)
+	fmt.Printf("\nGateway:    http://%s:%d\n", cfg.Gateway.Bind, cfg.Gateway.Port)
+	fmt.Printf("Sidecar:    %s\n", sc.URL())
+	if gkProxy != nil {
+		fmt.Printf("Gatekeeper: http://%s\n", gkProxy.Addr())
+	}
+	fmt.Printf("Token:      %s\n\n", cfg.Gateway.Token)
 
 	if err := gw.Start(); err != nil && ctx.Err() == nil {
 		log.Fatalf("Gateway error: %v", err)
@@ -467,6 +480,30 @@ func cmdSkillAdd() {
 	}
 
 	fmt.Printf("Installed skill %q into %s\n", s.Manifest.Skill.Name, destDir)
+
+	// Auto-approve required domains
+	if s.Manifest.Requires != nil && len(s.Manifest.Requires.Domains) > 0 {
+		dbStore, err := sqlite.New(cfg.Storage.Database)
+		if err == nil {
+			if err := dbStore.Migrate(context.Background()); err == nil {
+				gk := gatekeeper.New(dbStore, nil)
+				seeded := gk.SeedSkillDomains(context.Background(), s.Manifest.Requires.Domains, s.Manifest.Skill.Name)
+				if len(seeded) > 0 {
+					fmt.Printf("\nAuto-approved domains: %s\n", strings.Join(seeded, ", "))
+				}
+
+				// Warn about already-denied domains
+				for _, d := range s.Manifest.Requires.Domains {
+					entry, err := dbStore.GetDomain(context.Background(), strings.ToLower(d))
+					if err == nil && entry.Status == "deny" {
+						fmt.Printf("\n  Warning: domain %q is denied. Skill may not function correctly.\n", d)
+						fmt.Printf("  Allow it with: smithly domain allow %s\n", d)
+					}
+				}
+			}
+			dbStore.Close()
+		}
+	}
 
 	// Warn about OAuth2 requirements
 	if s.Manifest.Requires != nil && len(s.Manifest.Requires.OAuth2) > 0 {
@@ -828,6 +865,131 @@ func openBrowser(url string) {
 	}
 }
 
+// cmdDomain manages the network domain allowlist.
+func cmdDomain() {
+	if len(os.Args) < 3 {
+		fmt.Println(`Usage: smithly domain <subcommand>
+
+Subcommands:
+  list                List all domains and their status
+  allow <domain>      Allow a domain
+  deny <domain>       Deny a domain
+  log [--domain <d>]  Show domain access log`)
+		return
+	}
+
+	switch os.Args[2] {
+	case "list":
+		cmdDomainList()
+	case "allow":
+		cmdDomainSet("allow")
+	case "deny":
+		cmdDomainSet("deny")
+	case "log":
+		cmdDomainLog()
+	default:
+		fmt.Fprintf(os.Stderr, "unknown domain subcommand: %s\n", os.Args[2])
+		os.Exit(1)
+	}
+}
+
+func cmdDomainList() {
+	_, dbStore := loadConfig()
+	defer dbStore.Close()
+
+	entries, err := dbStore.ListDomains(context.Background())
+	if err != nil {
+		log.Fatalf("Failed to list domains: %v", err)
+	}
+
+	if len(entries) == 0 {
+		fmt.Println("No domains in allowlist.")
+		return
+	}
+
+	fmt.Printf("%-30s %-8s %-15s %-8s %s\n", "DOMAIN", "STATUS", "GRANTED BY", "COUNT", "LAST ACCESSED")
+	for _, e := range entries {
+		lastAccessed := "-"
+		if !e.LastAccessed.IsZero() {
+			lastAccessed = e.LastAccessed.Format("2006-01-02 15:04")
+		}
+		fmt.Printf("%-30s %-8s %-15s %-8d %s\n",
+			e.Domain, e.Status, e.GrantedBy, e.AccessCount, lastAccessed)
+	}
+}
+
+func cmdDomainSet(status string) {
+	if len(os.Args) < 4 {
+		fmt.Printf("Usage: smithly domain %s <domain>\n", status)
+		return
+	}
+
+	domain := os.Args[3]
+	_, dbStore := loadConfig()
+	defer dbStore.Close()
+
+	err := dbStore.SetDomain(context.Background(), &db.DomainEntry{
+		Domain:    strings.ToLower(strings.TrimSpace(domain)),
+		Status:    status,
+		GrantedBy: "user",
+	})
+	if err != nil {
+		log.Fatalf("Failed to set domain: %v", err)
+	}
+
+	fmt.Printf("Domain %q set to %s\n", domain, status)
+}
+
+func cmdDomainLog() {
+	_, dbStore := loadConfig()
+	defer dbStore.Close()
+
+	query := db.AuditQuery{Limit: 50}
+
+	args := os.Args[3:]
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--domain":
+			if i+1 < len(args) {
+				i++
+				query.Domain = args[i]
+			}
+		case "--limit":
+			if i+1 < len(args) {
+				i++
+				if n, err := strconv.Atoi(args[i]); err == nil {
+					query.Limit = n
+				}
+			}
+		}
+	}
+
+	// If no domain filter, only show gatekeeper entries
+	entries, err := dbStore.GetAuditLog(context.Background(), query)
+	if err != nil {
+		log.Fatalf("Failed to read audit log: %v", err)
+	}
+
+	if len(entries) == 0 {
+		fmt.Println("No domain access entries found.")
+		return
+	}
+
+	fmt.Printf("%-20s %-8s %-30s %s\n", "TIMESTAMP", "ACTION", "DOMAIN", "ACTOR")
+	for _, e := range entries {
+		if e.Domain == "" {
+			continue
+		}
+		action := strings.TrimPrefix(e.Action, "domain_")
+		fmt.Printf("%-20s %-8s %-30s %s\n",
+			e.Timestamp.Format("2006-01-02 15:04:05"),
+			action,
+			e.Domain,
+			e.Actor,
+		)
+	}
+}
+
 // cmdAudit shows the audit log.
 func cmdAudit() {
 	_, store := loadConfig()
@@ -986,6 +1148,27 @@ func loadAgent(ac config.AgentConfig, cfg *config.Config, store db.Store, credSt
 	}
 	a.Skills = skillRegistry
 
+	// Populate services info for system prompt injection
+	var svc agent.Services
+	svc.DataStores = cfg.DataStores
+	if cfg.Sidecar.Port != 0 || cfg.Sidecar.Bind != "" {
+		bind := cfg.Sidecar.Bind
+		if bind == "" {
+			bind = "127.0.0.1"
+		}
+		port := cfg.Sidecar.Port
+		if port == 0 {
+			port = 18791
+		}
+		svc.SidecarURL = fmt.Sprintf("http://%s:%d", bind, port)
+	}
+	for _, s := range cfg.Secrets {
+		svc.SecretNames = append(svc.SecretNames, s.Name)
+	}
+	if len(svc.DataStores) > 0 || svc.SidecarURL != "" || len(svc.SecretNames) > 0 {
+		a.Services = &svc
+	}
+
 	// Register built-in tools (filtered by agent's tool config)
 	registerTools(a.Tools, cfg, ac.Tools, skillRegistry, credStore)
 
@@ -1134,6 +1317,30 @@ func startSidecar(cfg *config.Config, dbStore db.Store, credStore credentials.St
 	}()
 
 	return sc
+}
+
+// startGatekeeper creates and starts the gatekeeper proxy in a goroutine.
+func startGatekeeper(cfg *config.Config, dbStore db.Store) *gatekeeper.Proxy {
+	bind := cfg.Gatekeeper.Bind
+	if bind == "" {
+		bind = "127.0.0.1"
+	}
+	port := cfg.Gatekeeper.Port
+	if port == 0 {
+		port = 18792
+	}
+
+	gk := gatekeeper.New(dbStore, nil)
+	proxy := gatekeeper.NewProxy(gk, dbStore, bind, port)
+
+	go func() {
+		log.Printf("gatekeeper proxy listening on %s", proxy.Addr())
+		if err := proxy.Start(); err != nil {
+			log.Printf("gatekeeper error: %v", err)
+		}
+	}()
+
+	return proxy
 }
 
 // configSecretStore implements sidecar.SecretStore from config entries.

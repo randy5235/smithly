@@ -32,6 +32,12 @@ type Store interface {
 	// Audit log (append-only)
 	LogAudit(ctx context.Context, entry *AuditEntry) error
 	GetAuditLog(ctx context.Context, opts AuditQuery) ([]*AuditEntry, error)
+
+	// Domain allowlist
+	GetDomain(ctx context.Context, domain string) (*DomainEntry, error)
+	ListDomains(ctx context.Context) ([]*DomainEntry, error)
+	SetDomain(ctx context.Context, entry *DomainEntry) error
+	TouchDomain(ctx context.Context, domain string) error
 }
 
 // Agent represents an agent configuration in the database.
@@ -67,6 +73,18 @@ type AuditEntry struct {
 	TrustLevel string
 	ApprovedBy string
 	Domain     string
+}
+
+// DomainEntry represents a row in the domain_allowlist table.
+type DomainEntry struct {
+	Domain       string
+	Status       string // "allow", "deny"
+	GrantedBy    string // "user", "skill:<name>", "default"
+	GrantedAt    time.Time
+	LastAccessed time.Time
+	AccessCount  int
+	RequestedBy  string
+	Notes        string
 }
 
 // AuditQuery filters audit log queries.

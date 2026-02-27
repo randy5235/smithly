@@ -22,6 +22,7 @@ type Config struct {
 	Sidecar     SidecarConfig     `toml:"sidecar"`
 	DataStores  []DataStoreConfig `toml:"datastore"`
 	Secrets     []SecretConfig    `toml:"secret"`
+	Gatekeeper  GatekeeperConfig  `toml:"gatekeeper"`
 	Agents      []AgentConfig     `toml:"agents"`
 }
 
@@ -101,6 +102,11 @@ type CredentialsConfig struct {
 type SidecarConfig struct {
 	Bind string `toml:"bind"` // default "127.0.0.1"
 	Port int    `toml:"port"` // default 18791
+}
+
+type GatekeeperConfig struct {
+	Bind string `toml:"bind"` // default "127.0.0.1"
+	Port int    `toml:"port"` // default 18792
 }
 
 type DataStoreConfig struct {

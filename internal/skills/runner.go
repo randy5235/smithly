@@ -39,6 +39,7 @@ type Runner struct {
 	timeout    time.Duration
 	sidecar    SidecarIface
 	dataStores []config.DataStoreConfig
+	proxyAddr  string
 }
 
 // NewRunner creates a code skill runner with the given execution timeout.
@@ -51,6 +52,11 @@ func NewRunner(timeout time.Duration, sidecar SidecarIface, stores []config.Data
 		sidecar:    sidecar,
 		dataStores: stores,
 	}
+}
+
+// SetProxy configures the HTTP proxy address for outbound network access.
+func (r *Runner) SetProxy(addr string) {
+	r.proxyAddr = addr
 }
 
 // Run executes a code skill with JSON input on stdin and captures JSON output on stdout.
@@ -96,6 +102,17 @@ func (r *Runner) Run(ctx context.Context, skill *Skill, input json.RawMessage, e
 			env = append(env, "SMITHLY_DB_TYPE="+ds.Type)
 			dbTypeSet = true
 		}
+	}
+
+	// Inject proxy env vars for outbound network gating
+	if r.proxyAddr != "" {
+		proxyURL := "http://" + r.proxyAddr
+		env = append(env,
+			"HTTP_PROXY="+proxyURL,
+			"HTTPS_PROXY="+proxyURL,
+			"http_proxy="+proxyURL,
+			"https_proxy="+proxyURL,
+		)
 	}
 
 	// Determine command to run

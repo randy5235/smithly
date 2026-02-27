@@ -36,6 +36,7 @@ type Agent struct {
 	Store       db.Store
 	Tools       *tools.Registry
 	Skills      *skills.Registry
+	Services    *Services
 	client      *http.Client
 }
 
@@ -153,6 +154,11 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, cb *Callbacks) (st
 	if a.Skills != nil {
 		if summary := a.Skills.Summary(); summary != "" {
 			systemPrompt += "\n\n---\n\n" + summary
+		}
+	}
+	if a.Services != nil {
+		if section := a.Services.SystemPromptSection(); section != "" {
+			systemPrompt += "\n\n---\n\n" + section
 		}
 	}
 	messages := []chatMessage{

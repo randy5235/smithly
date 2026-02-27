@@ -34,6 +34,11 @@ func RunAll(t *testing.T, factory Factory) {
 		{"AuditLog", testAuditLog},
 		{"AuditFilterByAgent", testAuditFilterByAgent},
 		{"AuditFilterByDomain", testAuditFilterByDomain},
+		{"DomainSetAndGet", testDomainSetAndGet},
+		{"DomainList", testDomainList},
+		{"DomainTouch", testDomainTouch},
+		{"DomainNotFound", testDomainNotFound},
+		{"DomainUpsert", testDomainUpsert},
 		{"MigrateIdempotent", testMigrateIdempotent},
 	}
 
@@ -292,6 +297,122 @@ func testAuditFilterByDomain(t *testing.T, store db.Store) {
 	}
 	if len(got) != 1 {
 		t.Fatalf("domain filtered len = %d, want 1", len(got))
+	}
+}
+
+// --- Domain Tests ---
+
+func testDomainSetAndGet(t *testing.T, store db.Store) {
+	ctx := context.Background()
+
+	entry := &db.DomainEntry{
+		Domain:    "api.example.com",
+		Status:    "allow",
+		GrantedBy: "user",
+	}
+	if err := store.SetDomain(ctx, entry); err != nil {
+		t.Fatalf("SetDomain: %v", err)
+	}
+
+	got, err := store.GetDomain(ctx, "api.example.com")
+	if err != nil {
+		t.Fatalf("GetDomain: %v", err)
+	}
+	if got.Domain != "api.example.com" {
+		t.Errorf("Domain = %q, want %q", got.Domain, "api.example.com")
+	}
+	if got.Status != "allow" {
+		t.Errorf("Status = %q, want %q", got.Status, "allow")
+	}
+	if got.GrantedBy != "user" {
+		t.Errorf("GrantedBy = %q, want %q", got.GrantedBy, "user")
+	}
+	if got.AccessCount != 0 {
+		t.Errorf("AccessCount = %d, want 0", got.AccessCount)
+	}
+}
+
+func testDomainList(t *testing.T, store db.Store) {
+	ctx := context.Background()
+
+	domains := []*db.DomainEntry{
+		{Domain: "api.a.com", Status: "allow", GrantedBy: "user"},
+		{Domain: "api.b.com", Status: "deny", GrantedBy: "user"},
+		{Domain: "api.c.com", Status: "allow", GrantedBy: "skill:web"},
+	}
+	for _, d := range domains {
+		if err := store.SetDomain(ctx, d); err != nil {
+			t.Fatalf("SetDomain %s: %v", d.Domain, err)
+		}
+	}
+
+	list, err := store.ListDomains(ctx)
+	if err != nil {
+		t.Fatalf("ListDomains: %v", err)
+	}
+	if len(list) != 3 {
+		t.Fatalf("len = %d, want 3", len(list))
+	}
+	// Should be ordered alphabetically
+	if list[0].Domain != "api.a.com" {
+		t.Errorf("first = %q, want %q", list[0].Domain, "api.a.com")
+	}
+	if list[1].Status != "deny" {
+		t.Errorf("second status = %q, want %q", list[1].Status, "deny")
+	}
+}
+
+func testDomainTouch(t *testing.T, store db.Store) {
+	ctx := context.Background()
+
+	store.SetDomain(ctx, &db.DomainEntry{Domain: "api.touch.com", Status: "allow", GrantedBy: "user"})
+
+	// Touch twice
+	if err := store.TouchDomain(ctx, "api.touch.com"); err != nil {
+		t.Fatalf("TouchDomain: %v", err)
+	}
+	if err := store.TouchDomain(ctx, "api.touch.com"); err != nil {
+		t.Fatalf("TouchDomain: %v", err)
+	}
+
+	got, err := store.GetDomain(ctx, "api.touch.com")
+	if err != nil {
+		t.Fatalf("GetDomain: %v", err)
+	}
+	if got.AccessCount != 2 {
+		t.Errorf("AccessCount = %d, want 2", got.AccessCount)
+	}
+	if got.LastAccessed.IsZero() {
+		t.Error("LastAccessed should not be zero after touch")
+	}
+}
+
+func testDomainNotFound(t *testing.T, store db.Store) {
+	ctx := context.Background()
+	_, err := store.GetDomain(ctx, "nonexistent.com")
+	if err == nil {
+		t.Fatal("expected error for nonexistent domain, got nil")
+	}
+}
+
+func testDomainUpsert(t *testing.T, store db.Store) {
+	ctx := context.Background()
+
+	// Set as allow
+	store.SetDomain(ctx, &db.DomainEntry{Domain: "api.upsert.com", Status: "allow", GrantedBy: "skill:web"})
+
+	// Upsert to deny
+	store.SetDomain(ctx, &db.DomainEntry{Domain: "api.upsert.com", Status: "deny", GrantedBy: "user"})
+
+	got, err := store.GetDomain(ctx, "api.upsert.com")
+	if err != nil {
+		t.Fatalf("GetDomain: %v", err)
+	}
+	if got.Status != "deny" {
+		t.Errorf("Status = %q, want %q after upsert", got.Status, "deny")
+	}
+	if got.GrantedBy != "user" {
+		t.Errorf("GrantedBy = %q, want %q after upsert", got.GrantedBy, "user")
 	}
 }
 

@@ -295,6 +295,79 @@ func (s *Store) GetAuditLog(ctx context.Context, opts db.AuditQuery) ([]*db.Audi
 	return entries, rows.Err()
 }
 
+// --- Domains ---
+
+func (s *Store) GetDomain(ctx context.Context, domain string) (*db.DomainEntry, error) {
+	row := s.conn.QueryRowContext(ctx,
+		`SELECT domain, status, granted_by, granted_at, last_accessed, access_count, requested_by, notes
+		 FROM domain_allowlist WHERE domain = ?`, domain)
+
+	d := &db.DomainEntry{}
+	var grantedAt string
+	var lastAccessed, requestedBy, notes sql.NullString
+	err := row.Scan(&d.Domain, &d.Status, &d.GrantedBy, &grantedAt, &lastAccessed, &d.AccessCount, &requestedBy, &notes)
+	if err != nil {
+		return nil, err
+	}
+	d.GrantedAt, _ = time.Parse("2006-01-02 15:04:05", grantedAt)
+	if lastAccessed.Valid {
+		d.LastAccessed, _ = time.Parse("2006-01-02 15:04:05", lastAccessed.String)
+	}
+	d.RequestedBy = requestedBy.String
+	d.Notes = notes.String
+	return d, nil
+}
+
+func (s *Store) ListDomains(ctx context.Context) ([]*db.DomainEntry, error) {
+	rows, err := s.conn.QueryContext(ctx,
+		`SELECT domain, status, granted_by, granted_at, last_accessed, access_count, requested_by, notes
+		 FROM domain_allowlist ORDER BY domain`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []*db.DomainEntry
+	for rows.Next() {
+		d := &db.DomainEntry{}
+		var grantedAt string
+		var lastAccessed, requestedBy, notes sql.NullString
+		if err := rows.Scan(&d.Domain, &d.Status, &d.GrantedBy, &grantedAt, &lastAccessed, &d.AccessCount, &requestedBy, &notes); err != nil {
+			return nil, err
+		}
+		d.GrantedAt, _ = time.Parse("2006-01-02 15:04:05", grantedAt)
+		if lastAccessed.Valid {
+			d.LastAccessed, _ = time.Parse("2006-01-02 15:04:05", lastAccessed.String)
+		}
+		d.RequestedBy = requestedBy.String
+		d.Notes = notes.String
+		entries = append(entries, d)
+	}
+	return entries, rows.Err()
+}
+
+func (s *Store) SetDomain(ctx context.Context, entry *db.DomainEntry) error {
+	_, err := s.conn.ExecContext(ctx,
+		`INSERT INTO domain_allowlist (domain, status, granted_by, requested_by, notes)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(domain) DO UPDATE SET
+		   status = excluded.status,
+		   granted_by = excluded.granted_by,
+		   granted_at = datetime('now'),
+		   requested_by = excluded.requested_by,
+		   notes = excluded.notes`,
+		entry.Domain, entry.Status, entry.GrantedBy, entry.RequestedBy, entry.Notes)
+	return err
+}
+
+func (s *Store) TouchDomain(ctx context.Context, domain string) error {
+	_, err := s.conn.ExecContext(ctx,
+		`UPDATE domain_allowlist
+		 SET access_count = access_count + 1, last_accessed = datetime('now')
+		 WHERE domain = ?`, domain)
+	return err
+}
+
 // --- helpers ---
 
 type scannable interface {
