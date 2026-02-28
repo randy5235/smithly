@@ -6,4 +6,4 @@ Autonomous agent controller. Agents run LLM loops with tool-use, code skill auth
 
 ## License
 
-BSL — see LICENSE for details.
+MIT — see [LICENSE](LICENSE) for details.

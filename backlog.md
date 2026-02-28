@@ -1,6 +1,6 @@
 # Smithly — Backlog
 
-> BSL-licensed open source controller. Source public at github.com/smithly/smithly
+> MIT-licensed open source controller. Source at github.com/smithly/smithly
 
 ## Phase 1: Core — Get Something Running ✅
 
