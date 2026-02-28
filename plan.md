@@ -1228,66 +1228,11 @@ This is the Grafana/GitLab model: open source core, paid enterprise self-hosted 
 
 **Enterprise tier** is even better — they run the infra, you sell the license + support. Near-zero COGS beyond your time.
 
-### 18.5 Licensing — BSL (Business Source License)
+### 18.5 Licensing — MIT
 
-The entire codebase is under the **BSL (Business Source License)**. This means:
+The entire codebase is under the **MIT License**. Anyone can use, modify, distribute, and build on Smithly without restriction. This isn't something that takes years to rebuild — keeping the license simple removes friction and matches the ecosystem norm (OpenClaw, etc.).
 
-- **Free to use** — anyone can self-host, run multi-agent, use every feature, modify the source, for any purpose
-- **Free to contribute** — full source is public, PRs welcome
-- **One restriction** — you cannot offer Smithly as a hosted/managed service to third parties without a commercial agreement
-- **Converts to open source** — after 4 years, each version converts to Apache 2.0
-
-This specifically prevents AWS, Google, Azure from wrapping Smithly in a managed service without paying. But individuals, companies, and teams can self-host freely with zero restrictions.
-
-**Why BSL, not MIT/AGPL:**
-
-- MIT: lets AWS offer "Managed Smithly" on day one. They capture the value, we get nothing.
-- AGPL: technically requires service providers to release source, but cloud providers have lawyers and workarounds. Also scares some enterprise adopters.
-- BSL: clear, simple, battle-tested (HashiCorp, MariaDB, CockroachDB). One restriction, plainly stated. Converts to full open source after 4 years.
-- SSPL: more aggressive than needed. We don't need to force AWS to open-source their entire stack — we just need them to not compete with our hosted offering.
-
-**What's free (everything):**
-
-| Component | Included in self-hosted |
-|---|---|
-| Go controller binary | Yes |
-| Multi-agent + workspaces (soul, identity, memory) | Yes |
-| Instruction skills + code skills (signing, scanning) | Yes |
-| Skill storage (SQLite + local files) | Yes |
-| Docker + none sandbox providers | Yes |
-| Network gatekeeper | Yes |
-| All channels (Telegram, Discord, Slack, CLI, Web) | Yes |
-| Webhooks | Yes |
-| Memory + vector search + FTS | Yes |
-| Heartbeat/cron | Yes |
-| Audit logging (local SQLite) | Yes |
-| Skill registry client (browse + install) | Yes |
-| Content firewall | Yes |
-
-**What you pay for (hosted service + enterprise support):**
-
-| Component | Why it's paid |
-|---|---|
-| Hosted Smithly Cloud (we run it) | Managed infrastructure — we operate the controller, compute, storage |
-| Fly sandbox provider | Managed remote execution |
-| D1 + R2 storage provider | Managed cloud storage |
-| Managed webhook endpoints | No tunnel setup needed |
-| Team features (multi-user, RBAC) | Pro/Enterprise add-on |
-| SSO / SAML | Enterprise add-on |
-| Audit export to SIEM | Enterprise add-on |
-| Private skill registry | Enterprise — proprietary skills stay private |
-| Verified publisher program | Registry monetization |
-| Dashboard + monitoring | Operational visibility |
-| Deployment tooling (Helm, Terraform) | Enterprise self-hosted support |
-| Support SLA | Enterprise requirement |
-
-**Repo structure:**
-
-```
-github.com/smithly/smithly          ← BSL licensed, full source public
-```
-
-Single repo. The BSL additional use grant specifies: "You may use the Licensed Work for any purpose, including production use, except you may not offer the Licensed Work to third parties as a managed service." Pro/Enterprise features like RBAC, SSO, SIEM export, and private registry are in the same repo but behind a license key check.
+Monetization comes from the hosted service and registry, not from license restrictions.
 
 ---
 
@@ -1545,13 +1490,12 @@ What happens under partial failure:
 
 ### 23.12 Registry Architecture
 
-The skill registry (`skills.smithly.dev`) is a **separate closed-source project**. It is not part of the BSL-licensed Smithly controller. It runs on our Cloudflare account and is our proprietary service.
+The skill registry (`skills.smithly.dev`) is a **separate closed-source project**. It is not part of the MIT-licensed Smithly controller. It runs on our Cloudflare account and is our proprietary service.
 
 | Component | License |
 |---|---|
-| `smithly` controller | BSL (source public) |
+| `smithly` controller | MIT (source public) |
 | `skills.smithly.dev` registry | Closed source, proprietary |
-| Pro/Enterprise features | In BSL repo, behind license key |
 
 The CLI's `smithly skill install` command is just an HTTP client talking to the registry API. If someone forks Smithly, they don't get the registry or the skill ecosystem — that's our moat.
 
@@ -1564,7 +1508,7 @@ The CLI's `smithly skill install` command is just an HTTP client talking to the 
 3. **Domain wildcards** — Allow `*.openweathermap.org` or exact subdomains only?
 4. **Offline mode** — Allow previously-approved domains, block everything new?
 5. **Multi-user** — One instance per user, or multi-user support?
-6. ~~**License**~~ — **Decided: BSL** with 4-year conversion to Apache 2.0
+6. ~~**License**~~ — **Decided: MIT**
 7. ~~**Hosted tier**~~ — **Decided: Smithly Cloud** on Fly + Cloudflare (Pro tier), Enterprise self-hosted with support
 8. **Storage migrations** — How to handle schema changes when a skill updates its table definitions?
 9. **Storage quotas** — Per-skill limits on table rows / file storage size?
