@@ -173,24 +173,20 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, cb *Callbacks) (st
 
 	// Get tool definitions (needed for context budget calculation)
 	var toolDefs []tools.OpenAITool
-	toolDefsTokens := 0
 	if len(a.Tools.All()) > 0 {
 		toolDefs = a.Tools.OpenAITools()
-		// Rough estimate: ~100 tokens per tool definition
-		toolDefsTokens = len(toolDefs) * 100
 	}
 
 	history, err := a.Store.GetMessages(ctx, a.ID, 200)
 	if err != nil {
 		return "", fmt.Errorf("load history: %w", err)
 	}
-	var historyMsgs []chatMessage
-	for _, m := range history {
-		historyMsgs = append(historyMsgs, chatMessage{Role: m.Role, Content: m.Content})
-	}
 
-	// Trim history to fit within context window
-	historyMsgs = a.trimHistory(systemPrompt, historyMsgs, toolDefsTokens)
+	// Compact or trim history to fit within context window
+	historyMsgs, err := a.compactHistory(ctx, systemPrompt, history, toolDefs)
+	if err != nil {
+		return "", fmt.Errorf("compact history: %w", err)
+	}
 	messages = append(messages, historyMsgs...)
 
 	// Agent loop — keep going until we get a text response (no more tool calls)

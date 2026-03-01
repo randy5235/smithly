@@ -28,6 +28,8 @@ type Store interface {
 	// Memory (conversation history per agent)
 	AppendMessage(ctx context.Context, msg *Message) error
 	GetMessages(ctx context.Context, agentID string, limit int) ([]*Message, error)
+	SearchMessages(ctx context.Context, agentID string, query string, limit int) ([]*Message, error)
+	InsertSummary(ctx context.Context, agentID string, summary string) error
 
 	// Audit log (append-only)
 	LogAudit(ctx context.Context, entry *AuditEntry) error

@@ -13,6 +13,7 @@ import (
 	"smithly.dev/internal/agent"
 	"smithly.dev/internal/db"
 	"smithly.dev/internal/db/sqlite"
+	"smithly.dev/internal/tools"
 	"smithly.dev/internal/workspace"
 )
 
@@ -636,6 +637,208 @@ func TestChatLoopDetection(t *testing.T) {
 	}
 	if !found {
 		t.Error("loop_detected audit entry not found")
+	}
+}
+
+func TestChatCompactionTriggered(t *testing.T) {
+	// Set up: agent with a tiny context window so compaction triggers easily
+	compactionCallCount := 0
+	mock := &mockLLM{
+		responses: []mockResponse{
+			// Compaction summary response
+			{content: "Summary: user discussed topics A, B, C."},
+			// Actual chat response
+			{content: "Here's my answer."},
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		compactionCallCount++
+		mock.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+
+	a := newTestAgent(t, srv)
+	a.MaxContext = 500 // very small context to force compaction
+
+	// Seed enough history to exceed 60% of 500 tokens (300 tokens = ~1200 chars)
+	for i := 0; i < 20; i++ {
+		a.Store.AppendMessage(context.Background(), &db.Message{
+			AgentID: "test-agent",
+			Role:    "user",
+			Content: fmt.Sprintf("This is message number %d with some padding text to take up space.", i),
+			Source:  "cli",
+			Trust:   "trusted",
+		})
+		a.Store.AppendMessage(context.Background(), &db.Message{
+			AgentID: "test-agent",
+			Role:    "assistant",
+			Content: fmt.Sprintf("Response to message %d with additional context and information.", i),
+			Source:  "llm",
+			Trust:   "trusted",
+		})
+	}
+
+	result, err := a.Chat(context.Background(), "one more question", nil)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if result != "Here's my answer." {
+		t.Errorf("result = %q, want 'Here's my answer.'", result)
+	}
+
+	// Should have made 2 LLM calls: one for compaction, one for the actual chat
+	if compactionCallCount != 2 {
+		t.Errorf("LLM calls = %d, want 2 (compaction + chat)", compactionCallCount)
+	}
+
+	// Verify summary was stored in DB
+	msgs, err := a.Store.GetMessages(context.Background(), "test-agent", 200)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+
+	foundSummary := false
+	for _, m := range msgs {
+		if m.Source == "summary" && m.Role == "system" {
+			foundSummary = true
+			if m.Content != "Summary: user discussed topics A, B, C." {
+				t.Errorf("summary content = %q", m.Content)
+			}
+			break
+		}
+	}
+	if !foundSummary {
+		t.Error("summary message not found in DB")
+	}
+}
+
+func TestChatNoCompactionWhenUnderBudget(t *testing.T) {
+	// With default 128k context, a few messages should NOT trigger compaction
+	mock := &mockLLM{
+		responses: []mockResponse{
+			{content: "Simple reply."},
+		},
+	}
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	a := newTestAgent(t, srv)
+
+	result, err := a.Chat(context.Background(), "hello", nil)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if result != "Simple reply." {
+		t.Errorf("result = %q", result)
+	}
+
+	// Only 1 LLM call (no compaction call)
+	if mock.calls != 1 {
+		t.Errorf("LLM calls = %d, want 1 (no compaction)", mock.calls)
+	}
+}
+
+func TestChatSummaryBoundary(t *testing.T) {
+	// When a summary exists in history, only messages from the summary forward
+	// should be included in context.
+	mock := &mockLLM{
+		responses: []mockResponse{
+			{content: "I know about topic A from the summary."},
+		},
+	}
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	a := newTestAgent(t, srv)
+
+	// Seed old messages
+	a.Store.AppendMessage(context.Background(), &db.Message{
+		AgentID: "test-agent", Role: "user", Content: "old message about topic X",
+		Source: "cli", Trust: "trusted",
+	})
+	a.Store.AppendMessage(context.Background(), &db.Message{
+		AgentID: "test-agent", Role: "assistant", Content: "response about topic X",
+		Source: "llm", Trust: "trusted",
+	})
+
+	// Insert a summary
+	a.Store.InsertSummary(context.Background(), "test-agent", "Summary: discussed topic X.")
+
+	// Add a recent message
+	a.Store.AppendMessage(context.Background(), &db.Message{
+		AgentID: "test-agent", Role: "user", Content: "follow up on topic X",
+		Source: "cli", Trust: "trusted",
+	})
+
+	result, err := a.Chat(context.Background(), "continue", nil)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if result != "I know about topic A from the summary." {
+		t.Errorf("result = %q", result)
+	}
+
+	// Verify the LLM request doesn't include the old messages before summary
+	if len(mock.requests) != 1 {
+		t.Fatalf("requests = %d, want 1", len(mock.requests))
+	}
+	// Messages should be: system prompt, summary, "follow up on topic X", "continue" (user msg from Chat())
+	// The "old message about topic X" and "response about topic X" should NOT be included
+	reqMsgs := mock.requests[0].Messages
+	for _, raw := range reqMsgs {
+		var msg struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		}
+		json.Unmarshal(raw, &msg)
+		if strings.Contains(msg.Content, "old message about topic X") {
+			t.Error("old message before summary boundary should not be in context")
+		}
+	}
+}
+
+func TestSearchHistoryTool(t *testing.T) {
+	store, err := sqlite.New(":memory:")
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	store.CreateAgent(context.Background(), &db.Agent{
+		ID: "agent1", Model: "m", WorkspacePath: "w",
+	})
+	store.AppendMessage(context.Background(), &db.Message{
+		AgentID: "agent1", Role: "user", Content: "tell me about elephants",
+		Source: "cli", Trust: "trusted",
+	})
+	store.AppendMessage(context.Background(), &db.Message{
+		AgentID: "agent1", Role: "assistant", Content: "Elephants are large mammals",
+		Source: "llm", Trust: "trusted",
+	})
+
+	// Use the search_history tool via the tools package
+	tool := tools.NewSearchHistory(store, "agent1")
+	result, err := tool.Run(context.Background(), json.RawMessage(`{"query":"elephants"}`))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(result, "elephants") {
+		t.Errorf("result should contain 'elephants': %q", result)
+	}
+	if !strings.Contains(result, "2 message(s)") {
+		t.Errorf("expected 2 matches: %q", result)
+	}
+
+	// No results
+	result, err = tool.Run(context.Background(), json.RawMessage(`{"query":"nonexistent"}`))
+	if err != nil {
+		t.Fatalf("Run no match: %v", err)
+	}
+	if !strings.Contains(result, "No messages found") {
+		t.Errorf("expected no results message: %q", result)
 	}
 }
 

@@ -30,6 +30,7 @@ var knownPricing = map[string]ModelPricing{
 	// Anthropic
 	"claude-opus-4-6":            {InputPerMillion: 5.0, OutputPerMillion: 25.0, CachedInputPerMillion: 0.50},
 	"claude-sonnet-4-6":          {InputPerMillion: 3.0, OutputPerMillion: 15.0, CachedInputPerMillion: 0.30},
+	"claude-sonnet-4-6-20250514": {InputPerMillion: 3.0, OutputPerMillion: 15.0, CachedInputPerMillion: 0.30},
 	"claude-opus-4-5-20251101":   {InputPerMillion: 5.0, OutputPerMillion: 25.0, CachedInputPerMillion: 0.50},
 	"claude-opus-4-5":            {InputPerMillion: 5.0, OutputPerMillion: 25.0, CachedInputPerMillion: 0.50},
 	"claude-opus-4-1-20250805":   {InputPerMillion: 15.0, OutputPerMillion: 75.0, CachedInputPerMillion: 1.50},

@@ -234,6 +234,45 @@ func (s *Store) GetMessages(ctx context.Context, agentID string, limit int) ([]*
 	return msgs, nil
 }
 
+func (s *Store) SearchMessages(ctx context.Context, agentID string, query string, limit int) ([]*db.Message, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.conn.QueryContext(ctx,
+		`SELECT id, agent_id, role, content, source, trust, created_at
+		 FROM memory
+		 WHERE agent_id = ? AND content LIKE '%' || ? || '%'
+		 ORDER BY id DESC
+		 LIMIT ?`,
+		agentID, query, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []*db.Message
+	for rows.Next() {
+		m := &db.Message{}
+		var createdAt string
+		if err := rows.Scan(&m.ID, &m.AgentID, &m.Role, &m.Content, &m.Source, &m.Trust, &createdAt); err != nil {
+			return nil, err
+		}
+		m.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
+		msgs = append(msgs, m)
+	}
+	return msgs, rows.Err()
+}
+
+func (s *Store) InsertSummary(ctx context.Context, agentID string, summary string) error {
+	_, err := s.conn.ExecContext(ctx,
+		`INSERT INTO memory (agent_id, role, content, source, trust)
+		 VALUES (?, 'system', ?, 'summary', 'trusted')`,
+		agentID, summary,
+	)
+	return err
+}
+
 // --- Audit ---
 
 func (s *Store) LogAudit(ctx context.Context, entry *db.AuditEntry) error {

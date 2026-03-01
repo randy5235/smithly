@@ -39,6 +39,8 @@ func RunAll(t *testing.T, factory Factory) {
 		{"DomainTouch", testDomainTouch},
 		{"DomainNotFound", testDomainNotFound},
 		{"DomainUpsert", testDomainUpsert},
+		{"SearchMessages", testSearchMessages},
+		{"InsertSummary", testInsertSummary},
 		{"MigrateIdempotent", testMigrateIdempotent},
 	}
 
@@ -413,6 +415,100 @@ func testDomainUpsert(t *testing.T, store db.Store) {
 	}
 	if got.GrantedBy != "user" {
 		t.Errorf("GrantedBy = %q, want %q after upsert", got.GrantedBy, "user")
+	}
+}
+
+// --- Search & Summary Tests ---
+
+func testSearchMessages(t *testing.T, store db.Store) {
+	ctx := context.Background()
+	store.CreateAgent(ctx, &db.Agent{ID: "agent1", Model: "m", WorkspacePath: "w"})
+
+	store.AppendMessage(ctx, &db.Message{AgentID: "agent1", Role: "user", Content: "tell me about golang", Source: "cli", Trust: "trusted"})
+	store.AppendMessage(ctx, &db.Message{AgentID: "agent1", Role: "assistant", Content: "Go is a great language", Source: "llm", Trust: "trusted"})
+	store.AppendMessage(ctx, &db.Message{AgentID: "agent1", Role: "user", Content: "what about python?", Source: "cli", Trust: "trusted"})
+	store.AppendMessage(ctx, &db.Message{AgentID: "agent1", Role: "assistant", Content: "Python is also popular", Source: "llm", Trust: "trusted"})
+
+	// Search for "golang" — should match 1 message
+	got, err := store.SearchMessages(ctx, "agent1", "golang", 10)
+	if err != nil {
+		t.Fatalf("SearchMessages: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	if got[0].Content != "tell me about golang" {
+		t.Errorf("content = %q", got[0].Content)
+	}
+
+	// Search for "python" — matches both "what about python?" and "Python is also popular"
+	got, err = store.SearchMessages(ctx, "agent1", "python", 10)
+	if err != nil {
+		t.Fatalf("SearchMessages python: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("python len = %d, want 2", len(got))
+	}
+
+	// Search with limit
+	got, err = store.SearchMessages(ctx, "agent1", "a", 2)
+	if err != nil {
+		t.Fatalf("SearchMessages limit: %v", err)
+	}
+	if len(got) > 2 {
+		t.Errorf("limit not respected: got %d", len(got))
+	}
+
+	// Search returns nothing for unmatched query
+	got, err = store.SearchMessages(ctx, "agent1", "nonexistent_xyz", 10)
+	if err != nil {
+		t.Fatalf("SearchMessages no match: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected 0 results, got %d", len(got))
+	}
+}
+
+func testInsertSummary(t *testing.T, store db.Store) {
+	ctx := context.Background()
+	store.CreateAgent(ctx, &db.Agent{ID: "agent1", Model: "m", WorkspacePath: "w"})
+
+	// Add some messages first
+	store.AppendMessage(ctx, &db.Message{AgentID: "agent1", Role: "user", Content: "hello", Source: "cli", Trust: "trusted"})
+	store.AppendMessage(ctx, &db.Message{AgentID: "agent1", Role: "assistant", Content: "hi", Source: "llm", Trust: "trusted"})
+
+	// Insert summary
+	summary := "Summary: User said hello, assistant responded."
+	if err := store.InsertSummary(ctx, "agent1", summary); err != nil {
+		t.Fatalf("InsertSummary: %v", err)
+	}
+
+	// Summary should appear in GetMessages
+	msgs, err := store.GetMessages(ctx, "agent1", 10)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("len = %d, want 3", len(msgs))
+	}
+	// Summary should be the last message (most recent)
+	if msgs[2].Role != "system" {
+		t.Errorf("summary role = %q, want system", msgs[2].Role)
+	}
+	if msgs[2].Source != "summary" {
+		t.Errorf("summary source = %q, want summary", msgs[2].Source)
+	}
+	if msgs[2].Content != summary {
+		t.Errorf("summary content = %q", msgs[2].Content)
+	}
+
+	// Summary should be searchable
+	found, err := store.SearchMessages(ctx, "agent1", "Summary:", 10)
+	if err != nil {
+		t.Fatalf("SearchMessages summary: %v", err)
+	}
+	if len(found) != 1 {
+		t.Fatalf("search summary len = %d, want 1", len(found))
 	}
 }
 

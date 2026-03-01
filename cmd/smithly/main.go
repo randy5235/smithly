@@ -1224,7 +1224,7 @@ func loadAgent(ac config.AgentConfig, cfg *config.Config, store db.Store, credSt
 	}
 
 	// Register built-in tools (filtered by agent's tool config)
-	registerTools(a.Tools, cfg, ac.Tools, skillRegistry, credStore, provider, skillsDir)
+	registerTools(a.Tools, cfg, ac.Tools, skillRegistry, credStore, provider, skillsDir, store, ac.ID)
 
 	// Ensure agent exists in DB
 	if _, err := store.GetAgent(context.Background(), ac.ID); err != nil {
@@ -1238,7 +1238,7 @@ func loadAgent(ac config.AgentConfig, cfg *config.Config, store db.Store, credSt
 	return a, nil
 }
 
-func registerTools(registry *tools.Registry, cfg *config.Config, allowedTools []string, skillRegistry *skills.Registry, credStore credentials.Store, codeRunner sandbox.Provider, skillsDir string) {
+func registerTools(registry *tools.Registry, cfg *config.Config, allowedTools []string, skillRegistry *skills.Registry, credStore credentials.Store, codeRunner sandbox.Provider, skillsDir string, dbStore db.Store, agentID string) {
 	// Build allowed set (empty = all allowed)
 	allowed := make(map[string]bool)
 	for _, t := range allowedTools {
@@ -1304,6 +1304,11 @@ func registerTools(registry *tools.Registry, cfg *config.Config, allowedTools []
 	if codeRunner != nil {
 		allTools = append(allTools, tools.NewRunCodeSkill(skillRegistry, codeRunner))
 		allTools = append(allTools, tools.NewWriteSkill(skillRegistry, skillsDir))
+	}
+
+	// Add search_history tool for conversation recall
+	if dbStore != nil && agentID != "" {
+		allTools = append(allTools, tools.NewSearchHistory(dbStore, agentID))
 	}
 	for _, t := range allTools {
 		if isAllowed(t.Name()) {
