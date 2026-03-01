@@ -109,8 +109,11 @@ Keep bash scripts simple. To read JSON stdin in bash: read input from stdin, par
 
 // TestLLMGeminiWriteAndRunSkill tests with Gemini via its OpenAI-compatible endpoint.
 //
-//	GEMINI_API_KEY=... go test ./internal/agent/ -run TestLLMGemini -v
+//	SMITHLY_INTEGRATION=1 GEMINI_API_KEY=... go test ./internal/agent/ -run TestLLMGemini -v
 func TestLLMGeminiWriteAndRunSkill(t *testing.T) {
+	if os.Getenv("SMITHLY_INTEGRATION") == "" {
+		t.Skip("SMITHLY_INTEGRATION not set")
+	}
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	if apiKey == "" {
 		t.Skip("GEMINI_API_KEY not set")
@@ -124,8 +127,11 @@ func TestLLMGeminiWriteAndRunSkill(t *testing.T) {
 
 // TestLLMOpenAIWriteAndRunSkill tests with OpenAI.
 //
-//	OPENAI_API_KEY=... go test ./internal/agent/ -run TestLLMOpenAI -v
+//	SMITHLY_INTEGRATION=1 OPENAI_API_KEY=... go test ./internal/agent/ -run TestLLMOpenAI -v
 func TestLLMOpenAIWriteAndRunSkill(t *testing.T) {
+	if os.Getenv("SMITHLY_INTEGRATION") == "" {
+		t.Skip("SMITHLY_INTEGRATION not set")
+	}
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {
 		t.Skip("OPENAI_API_KEY not set")
@@ -139,8 +145,11 @@ func TestLLMOpenAIWriteAndRunSkill(t *testing.T) {
 
 // TestLLMAnthropicWriteAndRunSkill tests with Anthropic Claude via the Messages API.
 //
-//	ANTHROPIC_API_KEY=... go test ./internal/agent/ -run TestLLMAnthropic -v
+//	SMITHLY_INTEGRATION=1 ANTHROPIC_API_KEY=... go test ./internal/agent/ -run TestLLMAnthropic -v
 func TestLLMAnthropicWriteAndRunSkill(t *testing.T) {
+	if os.Getenv("SMITHLY_INTEGRATION") == "" {
+		t.Skip("SMITHLY_INTEGRATION not set")
+	}
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if apiKey == "" {
 		t.Skip("ANTHROPIC_API_KEY not set")
@@ -154,8 +163,11 @@ func TestLLMAnthropicWriteAndRunSkill(t *testing.T) {
 
 // TestLLMOllamaWriteAndRunSkill tests with local Ollama models.
 //
-//	OLLAMA_MODEL=llama3.1:8b go test ./internal/agent/ -run TestLLMOllama -v
+//	SMITHLY_INTEGRATION=1 OLLAMA_MODEL=llama3.1:8b go test ./internal/agent/ -run TestLLMOllama -v
 func TestLLMOllamaWriteAndRunSkill(t *testing.T) {
+	if os.Getenv("SMITHLY_INTEGRATION") == "" {
+		t.Skip("SMITHLY_INTEGRATION not set")
+	}
 	model := os.Getenv("OLLAMA_MODEL")
 	if model == "" {
 		t.Skip("OLLAMA_MODEL not set")

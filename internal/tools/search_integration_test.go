@@ -14,11 +14,15 @@ import (
 )
 
 // TestBraveSearchIntegration runs a real search against Brave Search API.
-// Skipped unless BRAVE_API_KEY is set.
+//
+//	SMITHLY_INTEGRATION=1 BRAVE_API_KEY=... go test ./internal/tools/ -run TestBraveSearch -v
 func TestBraveSearchIntegration(t *testing.T) {
+	if os.Getenv("SMITHLY_INTEGRATION") == "" {
+		t.Skip("SMITHLY_INTEGRATION not set")
+	}
 	key := os.Getenv("BRAVE_API_KEY")
 	if key == "" {
-		t.Skip("BRAVE_API_KEY not set, skipping Brave Search integration test")
+		t.Skip("BRAVE_API_KEY not set")
 	}
 
 	provider := tools.NewBraveSearch(key)

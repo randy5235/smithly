@@ -16,6 +16,7 @@ type Config struct {
 	Sandbox     SandboxConfig     `toml:"sandbox"`
 	Storage     StorageConfig     `toml:"storage"`
 	Search      SearchConfig      `toml:"search"`
+	Memory      *MemoryConfig     `toml:"memory"`
 	OAuth2      []OAuth2Config    `toml:"oauth2"`
 	Notify      NotifyConfig      `toml:"notify"`
 	Credentials CredentialsConfig `toml:"credentials"`
@@ -75,6 +76,16 @@ type HeartbeatConfig struct {
 	QuietHours string `toml:"quiet_hours"`
 	AutoResume bool   `toml:"auto_resume"` // Resume paused agent when window expires (default true)
 	Skill      string `toml:"skill"`       // Run this code skill instead of LLM chat
+}
+
+// MemoryConfig enables optional vector embeddings for hybrid search.
+// Omit entirely for FTS5-only search (zero setup).
+type MemoryConfig struct {
+	EmbeddingProvider string `toml:"embedding_provider"` // "ollama", "openai", "openrouter", etc.
+	EmbeddingModel    string `toml:"embedding_model"`    // e.g. "nomic-embed-text"
+	EmbeddingBaseURL  string `toml:"embedding_base_url"` // e.g. "http://localhost:11434/v1"
+	EmbeddingAPIKey   string `toml:"embedding_api_key"`  // needed for remote providers
+	Dimensions        int    `toml:"dimensions"`         // embedding dimensions (e.g. 768)
 }
 
 type SearchConfig struct {

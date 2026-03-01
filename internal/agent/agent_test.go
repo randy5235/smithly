@@ -820,7 +820,7 @@ func TestSearchHistoryTool(t *testing.T) {
 	})
 
 	// Use the search_history tool via the tools package
-	tool := tools.NewSearchHistory(store, "agent1")
+	tool := tools.NewSearchHistory(store, "agent1", nil)
 	result, err := tool.Run(context.Background(), json.RawMessage(`{"query":"elephants"}`))
 	if err != nil {
 		t.Fatalf("Run: %v", err)

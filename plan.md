@@ -58,8 +58,8 @@ OpenClaw proved persistent AI agents are genuinely useful. But it has fundamenta
 | Sandboxing | **Docker** (default) | Runs everywhere, ephemeral containers, scoped mounts. Abstraction supports `none` / `docker` / `fly` (remote VMs) |
 | Skill Files | **Local filesystem** (local) / **R2** (remote) | Provider-dependent — local for docker/none, R2 for remote/hosted |
 | Skill Registry | **Cloudflare Workers + D1 + R2** | Zero egress, SQLite-at-edge, dirt cheap at scale |
-| Vector search | **sqlite-vec** | KNN search via SQL |
-| Embeddings | **Ollama (local)** or LLM provider | Keep memory private by default, cloud optional |
+| Vector search | **Pure Go cosine similarity** | Brute-force KNN, no CGo dependency, fast enough for <10K messages/agent |
+| Embeddings | **OpenAI-compatible API** (Ollama, OpenAI, OpenRouter) | Optional — FTS5 works without any embedding provider |
 
 ### Key Go Dependencies (minimal)
 
@@ -71,7 +71,7 @@ OpenClaw proved persistent AI agents are genuinely useful. But it has fundamenta
 | WebSocket | `nhooyr.io/websocket` | Lightweight, stdlib-compatible |
 | Ed25519 | `crypto/ed25519` (stdlib) | Built-in |
 | CLI | `flag` (stdlib) | Simple, no external dependency |
-| Vector search | `sqlite-vec` via CGo or pure-Go KNN | Evaluate at implementation time |
+| Vector search | Pure Go cosine similarity | No CGo — `modernc.org/sqlite` can't load sqlite-vec extensions |
 
 ---
 
@@ -299,19 +299,23 @@ Total capped at a configurable token limit (default 20,000 chars). If it exceeds
 
 ### 6.8 Memory (Structured, Not Flat Files)
 
-Unlike OpenClaw's flat Markdown memory files, Smithly stores memory in SQLite with trust tagging and vector search. But the experience is similar:
+Unlike OpenClaw's flat Markdown memory files, Smithly stores memory in SQLite with trust tagging and hybrid search. But the experience is similar:
 
 - **Short-term**: current conversation context (in-session, not persisted until explicitly saved)
-- **Long-term**: facts, decisions, preferences stored in the `memory` table with trust tags + embeddings
-- **Semantic search**: hybrid vector (sqlite-vec) + keyword (FTS5) search, weighted by trust level
+- **Long-term**: facts, decisions, preferences stored in the `memory` table with trust tags + optional embeddings
+- **Hybrid search**: FTS5 keyword (built-in, always available) + optional vector similarity (cosine, pure Go) + trust weighting
 
-The agent can save memories during conversation:
-```
-Agent: "Should I remember that you prefer dark mode for all UIs?"
-User: "Yes"
-→ INSERT INTO memory (content, source, trust) VALUES ('User prefers dark mode for all UIs', 'user', 'trusted')
-→ Embedding generated and stored in memory_vec
-```
+**FTS5 is the primary search engine** — works everywhere, no external dependencies, runs on a Raspberry Pi Zero. Vector search via embeddings is an optional enhancement configured via `[memory]` config, supporting any OpenAI-compatible `/v1/embeddings` endpoint (Ollama local, OpenAI, OpenRouter, etc.).
+
+Scoring formula (hybrid mode): `score = 0.3 * fts5_score + 0.5 * vector_similarity + 0.2 * trust_weight`
+
+Trust weights: trusted=1.0, semi-trusted=0.7, untrusted=0.3.
+
+The agent has two tools for memory access:
+- `search_history` — keyword/semantic/hybrid search with surrounding context window
+- `read_history` — page backward through conversation with `before_id` pagination
+
+CLI commands: `smithly memory search/stats/export/embed`
 
 Memory is per-agent (each agent has its own partition). An agent doesn't see another agent's conversation memory.
 
@@ -828,15 +832,19 @@ CREATE TABLE memory (
   deleted INTEGER DEFAULT 0
 );
 
--- Vector embeddings for semantic search (sqlite-vec)
-CREATE VIRTUAL TABLE memory_vec USING vec0(
-  embedding float[384]
+-- Full-text search (external-content FTS5, synced via triggers)
+CREATE VIRTUAL TABLE memory_fts USING fts5(
+  content,
+  content=memory, content_rowid=id
 );
 
--- Full-text search (built-in SQLite)
-CREATE VIRTUAL TABLE memory_fts USING fts5(
-  content, source,
-  content=memory, content_rowid=id
+-- Embeddings storage for optional vector search (pure Go cosine similarity)
+CREATE TABLE memory_embeddings (
+  memory_id INTEGER PRIMARY KEY REFERENCES memory(id),
+  embedding BLOB NOT NULL,
+  model TEXT NOT NULL,
+  dimensions INTEGER NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
 );
 
 -- Channel → agent bindings

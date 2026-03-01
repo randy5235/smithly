@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -124,17 +125,30 @@ func (s *Store) Migrate(ctx context.Context) error {
 	return nil
 }
 
+// SplitStatements is exported for testing only.
+func SplitStatements(sql string) []string { return splitStatements(sql) }
+
 func splitStatements(sql string) []string {
 	var stmts []string
 	var current strings.Builder
+	depth := 0 // tracks BEGIN/END nesting for triggers
 	for _, line := range strings.Split(sql, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "--") {
 			continue
 		}
+		upper := strings.ToUpper(trimmed)
+		if upper == "BEGIN" || strings.HasPrefix(upper, "BEGIN ") || strings.HasSuffix(upper, " BEGIN") {
+			depth++
+		}
+		if strings.HasPrefix(upper, "END;") || upper == "END" {
+			if depth > 0 {
+				depth--
+			}
+		}
 		current.WriteString(line)
 		current.WriteString("\n")
-		if strings.HasSuffix(trimmed, ";") {
+		if strings.HasSuffix(trimmed, ";") && depth == 0 {
 			stmts = append(stmts, current.String())
 			current.Reset()
 		}
@@ -192,12 +206,19 @@ func (s *Store) DeleteAgent(ctx context.Context, id string) error {
 // --- Memory ---
 
 func (s *Store) AppendMessage(ctx context.Context, msg *db.Message) error {
-	_, err := s.conn.ExecContext(ctx,
+	res, err := s.conn.ExecContext(ctx,
 		`INSERT INTO memory (agent_id, role, content, source, trust)
 		 VALUES (?, ?, ?, ?, ?)`,
 		msg.AgentID, msg.Role, msg.Content, msg.Source, msg.Trust,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	id, err := res.LastInsertId()
+	if err == nil {
+		msg.ID = id
+	}
+	return nil
 }
 
 func (s *Store) GetMessages(ctx context.Context, agentID string, limit int) ([]*db.Message, error) {
@@ -238,13 +259,17 @@ func (s *Store) SearchMessages(ctx context.Context, agentID string, query string
 	if limit <= 0 {
 		limit = 20
 	}
+	// Quote query as a phrase to avoid FTS5 syntax interpretation
+	// (e.g., "Summary:" would otherwise be parsed as column:term)
+	ftsQuery := `"` + strings.ReplaceAll(query, `"`, `""`) + `"`
 	rows, err := s.conn.QueryContext(ctx,
-		`SELECT id, agent_id, role, content, source, trust, created_at
-		 FROM memory
-		 WHERE agent_id = ? AND content LIKE '%' || ? || '%'
-		 ORDER BY id DESC
+		`SELECT m.id, m.agent_id, m.role, m.content, m.source, m.trust, m.created_at
+		 FROM memory_fts f
+		 JOIN memory m ON m.id = f.rowid
+		 WHERE memory_fts MATCH ? AND m.agent_id = ?
+		 ORDER BY bm25(memory_fts) ASC
 		 LIMIT ?`,
-		agentID, query, limit,
+		ftsQuery, agentID, limit,
 	)
 	if err != nil {
 		return nil, err
@@ -271,6 +296,189 @@ func (s *Store) InsertSummary(ctx context.Context, agentID string, summary strin
 		agentID, summary,
 	)
 	return err
+}
+
+func (s *Store) GetMessagesByID(ctx context.Context, agentID string, beforeID int64, limit int) ([]*db.Message, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	var query string
+	var args []any
+	if beforeID > 0 {
+		query = `SELECT id, agent_id, role, content, source, trust, created_at
+			FROM memory
+			WHERE agent_id = ? AND deleted = 0 AND id < ?
+			ORDER BY id DESC
+			LIMIT ?`
+		args = []any{agentID, beforeID, limit}
+	} else {
+		query = `SELECT id, agent_id, role, content, source, trust, created_at
+			FROM memory
+			WHERE agent_id = ? AND deleted = 0
+			ORDER BY id DESC
+			LIMIT ?`
+		args = []any{agentID, limit}
+	}
+
+	rows, err := s.conn.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []*db.Message
+	for rows.Next() {
+		m := &db.Message{}
+		var createdAt string
+		if err := rows.Scan(&m.ID, &m.AgentID, &m.Role, &m.Content, &m.Source, &m.Trust, &createdAt); err != nil {
+			return nil, err
+		}
+		m.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
+		msgs = append(msgs, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Reverse to chronological order
+	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
+		msgs[i], msgs[j] = msgs[j], msgs[i]
+	}
+	return msgs, nil
+}
+
+func (s *Store) SearchMessagesFTS(ctx context.Context, agentID string, query string, limit int) ([]*db.SearchResult, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	ftsQuery := `"` + strings.ReplaceAll(query, `"`, `""`) + `"`
+	rows, err := s.conn.QueryContext(ctx,
+		`SELECT m.id, m.agent_id, m.role, m.content, m.source, m.trust, m.created_at, bm25(memory_fts) AS score
+		 FROM memory_fts f
+		 JOIN memory m ON m.id = f.rowid
+		 WHERE memory_fts MATCH ? AND m.agent_id = ?
+		 ORDER BY score ASC
+		 LIMIT ?`,
+		ftsQuery, agentID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []*db.SearchResult
+	for rows.Next() {
+		r := &db.SearchResult{}
+		var createdAt string
+		if err := rows.Scan(&r.ID, &r.AgentID, &r.Role, &r.Content, &r.Source, &r.Trust, &createdAt, &r.Score); err != nil {
+			return nil, err
+		}
+		r.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
+		results = append(results, r)
+	}
+	return results, rows.Err()
+}
+
+// --- Embeddings ---
+
+func (s *Store) StoreEmbedding(ctx context.Context, memoryID int64, embedding []float32, model string, dimensions int) error {
+	blob := encodeFloat32(embedding)
+	_, err := s.conn.ExecContext(ctx,
+		`INSERT OR REPLACE INTO memory_embeddings (memory_id, embedding, model, dimensions)
+		 VALUES (?, ?, ?, ?)`,
+		memoryID, blob, model, dimensions,
+	)
+	return err
+}
+
+func (s *Store) GetEmbeddings(ctx context.Context, agentID string) ([]db.MemoryEmbedding, error) {
+	rows, err := s.conn.QueryContext(ctx,
+		`SELECT e.memory_id, e.embedding, e.model, e.dimensions, m.trust
+		 FROM memory_embeddings e
+		 JOIN memory m ON m.id = e.memory_id
+		 WHERE m.agent_id = ?`,
+		agentID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var embeddings []db.MemoryEmbedding
+	for rows.Next() {
+		var me db.MemoryEmbedding
+		var blob []byte
+		if err := rows.Scan(&me.MemoryID, &blob, &me.Model, &me.Dimensions, &me.Trust); err != nil {
+			return nil, err
+		}
+		me.Embedding = decodeFloat32(blob)
+		embeddings = append(embeddings, me)
+	}
+	return embeddings, rows.Err()
+}
+
+func (s *Store) GetEmbeddingCount(ctx context.Context, agentID string) (int, error) {
+	var count int
+	err := s.conn.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memory_embeddings e
+		 JOIN memory m ON m.id = e.memory_id
+		 WHERE m.agent_id = ?`, agentID).Scan(&count)
+	return count, err
+}
+
+func (s *Store) GetUnembeddedMessages(ctx context.Context, agentID string, limit int) ([]*db.Message, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.conn.QueryContext(ctx,
+		`SELECT m.id, m.agent_id, m.role, m.content, m.source, m.trust, m.created_at
+		 FROM memory m
+		 LEFT JOIN memory_embeddings e ON e.memory_id = m.id
+		 WHERE m.agent_id = ? AND m.deleted = 0 AND e.memory_id IS NULL
+		 ORDER BY m.id
+		 LIMIT ?`,
+		agentID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []*db.Message
+	for rows.Next() {
+		m := &db.Message{}
+		var createdAt string
+		if err := rows.Scan(&m.ID, &m.AgentID, &m.Role, &m.Content, &m.Source, &m.Trust, &createdAt); err != nil {
+			return nil, err
+		}
+		m.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
+		msgs = append(msgs, m)
+	}
+	return msgs, rows.Err()
+}
+
+// encode/decode helpers for embedding BLOBs
+
+func encodeFloat32(v []float32) []byte {
+	buf := make([]byte, len(v)*4)
+	for i, f := range v {
+		bits := math.Float32bits(f)
+		buf[i*4] = byte(bits)
+		buf[i*4+1] = byte(bits >> 8)
+		buf[i*4+2] = byte(bits >> 16)
+		buf[i*4+3] = byte(bits >> 24)
+	}
+	return buf
+}
+
+func decodeFloat32(b []byte) []float32 {
+	n := len(b) / 4
+	v := make([]float32, n)
+	for i := range n {
+		bits := uint32(b[i*4]) | uint32(b[i*4+1])<<8 | uint32(b[i*4+2])<<16 | uint32(b[i*4+3])<<24
+		v[i] = math.Float32frombits(bits)
+	}
+	return v
 }
 
 // --- Audit ---

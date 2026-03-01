@@ -40,7 +40,14 @@ func RunAll(t *testing.T, factory Factory) {
 		{"DomainNotFound", testDomainNotFound},
 		{"DomainUpsert", testDomainUpsert},
 		{"SearchMessages", testSearchMessages},
+		{"SearchMessagesFTS", testSearchMessagesFTS},
 		{"InsertSummary", testInsertSummary},
+		{"StoreAndGetEmbeddings", testStoreAndGetEmbeddings},
+		{"GetEmbeddingCount", testGetEmbeddingCount},
+		{"GetUnembeddedMessages", testGetUnembeddedMessages},
+		{"FTSTriggerSync", testFTSTriggerSync},
+		{"GetMessagesByID", testGetMessagesByID},
+		{"AppendMessageSetsID", testAppendMessageSetsID},
 		{"MigrateIdempotent", testMigrateIdempotent},
 	}
 
@@ -509,6 +516,192 @@ func testInsertSummary(t *testing.T, store db.Store) {
 	}
 	if len(found) != 1 {
 		t.Fatalf("search summary len = %d, want 1", len(found))
+	}
+}
+
+// --- FTS & Embedding Tests ---
+
+func testSearchMessagesFTS(t *testing.T, store db.Store) {
+	ctx := context.Background()
+	store.CreateAgent(ctx, &db.Agent{ID: "agent1", Model: "m", WorkspacePath: "w"})
+
+	store.AppendMessage(ctx, &db.Message{AgentID: "agent1", Role: "user", Content: "tell me about golang", Source: "cli", Trust: "trusted"})
+	store.AppendMessage(ctx, &db.Message{AgentID: "agent1", Role: "assistant", Content: "Go is a great language", Source: "llm", Trust: "trusted"})
+	store.AppendMessage(ctx, &db.Message{AgentID: "agent1", Role: "user", Content: "what about python?", Source: "cli", Trust: "semi-trusted"})
+
+	results, err := store.SearchMessagesFTS(ctx, "agent1", "golang", 10)
+	if err != nil {
+		t.Fatalf("SearchMessagesFTS: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("len = %d, want 1", len(results))
+	}
+	if results[0].Content != "tell me about golang" {
+		t.Errorf("content = %q", results[0].Content)
+	}
+	if results[0].Score == 0 {
+		t.Error("expected non-zero BM25 score")
+	}
+}
+
+func testStoreAndGetEmbeddings(t *testing.T, store db.Store) {
+	ctx := context.Background()
+	store.CreateAgent(ctx, &db.Agent{ID: "agent1", Model: "m", WorkspacePath: "w"})
+
+	msg := &db.Message{AgentID: "agent1", Role: "user", Content: "test embedding", Source: "cli", Trust: "trusted"}
+	store.AppendMessage(ctx, msg)
+	if msg.ID == 0 {
+		t.Fatal("msg.ID not set after AppendMessage")
+	}
+
+	vec := []float32{0.1, 0.2, 0.3}
+	if err := store.StoreEmbedding(ctx, msg.ID, vec, "test-model", 3); err != nil {
+		t.Fatalf("StoreEmbedding: %v", err)
+	}
+
+	embeddings, err := store.GetEmbeddings(ctx, "agent1")
+	if err != nil {
+		t.Fatalf("GetEmbeddings: %v", err)
+	}
+	if len(embeddings) != 1 {
+		t.Fatalf("len = %d, want 1", len(embeddings))
+	}
+	if embeddings[0].MemoryID != msg.ID {
+		t.Errorf("MemoryID = %d, want %d", embeddings[0].MemoryID, msg.ID)
+	}
+	if embeddings[0].Model != "test-model" {
+		t.Errorf("Model = %q", embeddings[0].Model)
+	}
+	if len(embeddings[0].Embedding) != 3 {
+		t.Errorf("embedding len = %d, want 3", len(embeddings[0].Embedding))
+	}
+	if embeddings[0].Embedding[0] != 0.1 {
+		t.Errorf("embedding[0] = %f, want 0.1", embeddings[0].Embedding[0])
+	}
+	if embeddings[0].Trust != "trusted" {
+		t.Errorf("Trust = %q, want trusted", embeddings[0].Trust)
+	}
+}
+
+func testGetEmbeddingCount(t *testing.T, store db.Store) {
+	ctx := context.Background()
+	store.CreateAgent(ctx, &db.Agent{ID: "agent1", Model: "m", WorkspacePath: "w"})
+
+	msg1 := &db.Message{AgentID: "agent1", Role: "user", Content: "msg1", Source: "cli", Trust: "trusted"}
+	msg2 := &db.Message{AgentID: "agent1", Role: "user", Content: "msg2", Source: "cli", Trust: "trusted"}
+	store.AppendMessage(ctx, msg1)
+	store.AppendMessage(ctx, msg2)
+
+	count, err := store.GetEmbeddingCount(ctx, "agent1")
+	if err != nil {
+		t.Fatalf("GetEmbeddingCount: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0", count)
+	}
+
+	store.StoreEmbedding(ctx, msg1.ID, []float32{0.1}, "m", 1)
+	count, _ = store.GetEmbeddingCount(ctx, "agent1")
+	if count != 1 {
+		t.Errorf("count = %d, want 1", count)
+	}
+}
+
+func testGetUnembeddedMessages(t *testing.T, store db.Store) {
+	ctx := context.Background()
+	store.CreateAgent(ctx, &db.Agent{ID: "agent1", Model: "m", WorkspacePath: "w"})
+
+	msg1 := &db.Message{AgentID: "agent1", Role: "user", Content: "embedded", Source: "cli", Trust: "trusted"}
+	msg2 := &db.Message{AgentID: "agent1", Role: "user", Content: "not embedded", Source: "cli", Trust: "trusted"}
+	store.AppendMessage(ctx, msg1)
+	store.AppendMessage(ctx, msg2)
+
+	store.StoreEmbedding(ctx, msg1.ID, []float32{0.1}, "m", 1)
+
+	msgs, err := store.GetUnembeddedMessages(ctx, "agent1", 10)
+	if err != nil {
+		t.Fatalf("GetUnembeddedMessages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("len = %d, want 1", len(msgs))
+	}
+	if msgs[0].Content != "not embedded" {
+		t.Errorf("content = %q, want 'not embedded'", msgs[0].Content)
+	}
+}
+
+func testFTSTriggerSync(t *testing.T, store db.Store) {
+	ctx := context.Background()
+	store.CreateAgent(ctx, &db.Agent{ID: "agent1", Model: "m", WorkspacePath: "w"})
+
+	// Insert a message — FTS trigger should index it
+	store.AppendMessage(ctx, &db.Message{AgentID: "agent1", Role: "user", Content: "unique xylophone word", Source: "cli", Trust: "trusted"})
+
+	// Should be searchable via FTS
+	results, err := store.SearchMessagesFTS(ctx, "agent1", "xylophone", 10)
+	if err != nil {
+		t.Fatalf("SearchMessagesFTS: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("len = %d, want 1 (trigger not syncing FTS?)", len(results))
+	}
+}
+
+func testGetMessagesByID(t *testing.T, store db.Store) {
+	ctx := context.Background()
+	store.CreateAgent(ctx, &db.Agent{ID: "agent1", Model: "m", WorkspacePath: "w"})
+
+	// Insert 5 messages
+	var ids []int64
+	for i := 0; i < 5; i++ {
+		msg := &db.Message{
+			AgentID: "agent1", Role: "user",
+			Content: fmt.Sprintf("msg %d", i),
+			Source:  "cli", Trust: "trusted",
+		}
+		store.AppendMessage(ctx, msg)
+		ids = append(ids, msg.ID)
+	}
+
+	// Get 2 messages before the last one
+	msgs, err := store.GetMessagesByID(ctx, "agent1", ids[4], 2)
+	if err != nil {
+		t.Fatalf("GetMessagesByID: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("len = %d, want 2", len(msgs))
+	}
+	// Should be in chronological order: msg 2, msg 3
+	if msgs[0].Content != "msg 2" {
+		t.Errorf("first = %q, want 'msg 2'", msgs[0].Content)
+	}
+	if msgs[1].Content != "msg 3" {
+		t.Errorf("second = %q, want 'msg 3'", msgs[1].Content)
+	}
+
+	// Get with beforeID=0 — returns most recent
+	msgs, err = store.GetMessagesByID(ctx, "agent1", 0, 3)
+	if err != nil {
+		t.Fatalf("GetMessagesByID(0): %v", err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("len = %d, want 3", len(msgs))
+	}
+	if msgs[2].Content != "msg 4" {
+		t.Errorf("last = %q, want 'msg 4'", msgs[2].Content)
+	}
+}
+
+func testAppendMessageSetsID(t *testing.T, store db.Store) {
+	ctx := context.Background()
+	store.CreateAgent(ctx, &db.Agent{ID: "agent1", Model: "m", WorkspacePath: "w"})
+
+	msg := &db.Message{AgentID: "agent1", Role: "user", Content: "test", Source: "cli", Trust: "trusted"}
+	if err := store.AppendMessage(ctx, msg); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	if msg.ID == 0 {
+		t.Error("msg.ID should be set after AppendMessage")
 	}
 }
 

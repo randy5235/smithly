@@ -52,13 +52,15 @@
 - [x] Log every LLM call, tool invocation
 - [x] `smithly audit show` with --agent and --limit flags
 
-### Tests (120+)
+### Tests (269)
 - [x] Agent loop: 12 tests (mock LLM, tool calls, streaming, persistence, audit, errors)
 - [x] CLI channel: 8 tests (exit, chat, tools, banner, EOF)
 - [x] Gateway: 8 tests (health, auth, chat endpoint, rate limiting, errors)
-- [x] Tools: 41 tests (search permissions, robots.txt, fetch, bash, files, schema)
+- [x] Tools: 52 tests (search permissions, robots.txt, fetch, bash, files, schema, skills)
 - [x] Config: 6 tests (write/load, defaults, multi-agent, Ollama, token persistence)
-- [x] SQLite: 13 conformance tests
+- [x] SQLite: 28 conformance tests + 5 splitStatements tests
+- [x] Embedding: 9 tests (math + client)
+- [x] Memory: 4 tests (keyword, hybrid, semantic fallback, trust scoring)
 - [x] Workspace: 4 tests
 
 ---
@@ -286,15 +288,50 @@
 
 ---
 
-## Phase 7: Memory + Search (Heartbeat moved to Phase 2 ✅)
+## Phase 7: Memory + Search ✅
 
-### Memory
-- [ ] Vector search (sqlite-vec or pure Go KNN)
-- [ ] Local embedding generation via Ollama
-- [ ] FTS5 keyword search
-- [ ] Hybrid search with trust weighting
-- [ ] Per-agent memory partitioning
-- [ ] `smithly memory search/stats/export`
+### FTS5 Search (primary, always available)
+- [x] External-content FTS5 table synced via INSERT/DELETE/UPDATE triggers
+- [x] BM25-ranked search via `SearchMessages` and `SearchMessagesFTS`
+- [x] Migration runner fixed for trigger support (`splitStatements` tracks BEGIN/END depth)
+
+### Vector Search (optional, OpenAI-compatible embeddings)
+- [x] Embedding client — any OpenAI-compatible `/v1/embeddings` endpoint (Ollama, OpenAI, OpenRouter)
+- [x] Pure Go cosine similarity (no CGo, no sqlite-vec — fast enough for <10K messages/agent)
+- [x] `memory_embeddings` table with BLOB storage, float32 encode/decode
+- [x] `[memory]` config section — omit entirely for FTS5-only search
+
+### Hybrid Search
+- [x] `memory.Searcher` combines FTS5 + vector similarity + trust weighting
+- [x] Score formula: `0.3 * fts5 + 0.5 * vector + 0.2 * trust`
+- [x] Trust weights: trusted=1.0, semi-trusted=0.7, untrusted=0.3
+- [x] Modes: keyword (FTS5 only), semantic (vector only), hybrid (combined)
+- [x] Graceful fallback: no embedder configured → FTS5 + trust weighting only
+
+### Agent Tools
+- [x] `search_history` upgraded — hybrid search, `context` param for surrounding messages, `mode` param
+- [x] `read_history` — page backward through conversation with `before_id` pagination
+
+### CLI
+- [x] `smithly memory search <query>` — hybrid search from terminal
+- [x] `smithly memory stats` — message count, embedding count, coverage %
+- [x] `smithly memory export` — dump messages as JSON
+- [x] `smithly memory embed` — generate embeddings for un-embedded messages
+- [x] `smithly doctor` — embedding provider health check when configured
+
+### Store Interface
+- [x] `StoreEmbedding`, `GetEmbeddings`, `GetEmbeddingCount`, `GetUnembeddedMessages`
+- [x] `SearchMessagesFTS` (BM25 scored results)
+- [x] `GetMessagesByID` (pagination for read_history)
+- [x] `AppendMessage` sets `msg.ID` from `LastInsertId()`
+
+### Tests
+- [x] `splitStatements`: 5 test cases (simple, triggers, mixed, multiple triggers, comments)
+- [x] Store conformance: 7 new tests (SearchMessagesFTS, StoreAndGetEmbeddings, GetEmbeddingCount, GetUnembeddedMessages, FTSTriggerSync, GetMessagesByID, AppendMessageSetsID)
+- [x] Embedding math: 5 tests (cosine similarity, normalize, encode/decode)
+- [x] Embedding client: 4 tests (single, batch, error, no-auth)
+- [x] Memory searcher: 4 tests (keyword, hybrid, semantic fallback, trust scoring)
+- [x] Integration tests gated behind `SMITHLY_INTEGRATION=1` env var
 
 ---
 
