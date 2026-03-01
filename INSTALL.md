@@ -133,15 +133,13 @@ You’ll get a REPL‑style chat interface. The agent can invoke tools (search, 
 
 ---
 
-## 9. Optional: Running Tests
-
-The repository ships with >120 unit tests. To run them:
+## 9. Running Tests
 
 ```bash
 go test ./...
 ```
 
-All tests are pure Go (no external services). They validate the agent loop, CLI channel, gateway, tools, SQLite store, and more.
+All unit tests are pure Go (no API keys needed). For LLM integration tests with real API keys, supported models, and pricing details, see [TESTING.md](TESTING.md).
 
 ---
 

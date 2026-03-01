@@ -90,6 +90,29 @@ type OpenAIFunction struct {
 	Parameters  json.RawMessage `json:"parameters"`
 }
 
+// ResponsesTool is the tool definition format for the OpenAI Responses API.
+// Unlike OpenAITool, the function fields are flat (not nested under a "function" key).
+type ResponsesTool struct {
+	Type        string          `json:"type"`
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Parameters  json.RawMessage `json:"parameters"`
+}
+
+// ResponsesTools returns the tool definitions in OpenAI Responses API format.
+func (r *Registry) ResponsesTools() []ResponsesTool {
+	var result []ResponsesTool
+	for _, t := range r.All() {
+		result = append(result, ResponsesTool{
+			Type:        "function",
+			Name:        t.Name(),
+			Description: t.Description(),
+			Parameters:  t.Parameters(),
+		})
+	}
+	return result
+}
+
 // ApprovalFunc is called when a tool needs user approval before running.
 // It receives the tool name and a human-readable description of what will happen.
 // Returns true if approved.

@@ -91,7 +91,7 @@ func TestListAgents(t *testing.T) {
 	ws := &workspace.Workspace{
 		Identity: workspace.Identity{Name: "Test Bot"},
 	}
-	a := agent.New("bot1", "gpt-4o", "", "", ws, store)
+	a := agent.New("bot1", "gpt-4o", "", "", "", ws, store)
 	gw.RegisterAgent(a)
 
 	handler := gw.Handler()
@@ -146,7 +146,7 @@ func TestChatEndpoint(t *testing.T) {
 	ws := &workspace.Workspace{
 		Identity: workspace.Identity{Name: "GatewayBot"},
 	}
-	a := agent.NewWithClient("gw-bot", "test-model", llm.URL, "key", ws, store, llm.Client())
+	a := agent.NewWithClient("gw-bot", "test-model", "", llm.URL, "key", ws, store, llm.Client())
 	gw.RegisterAgent(a)
 
 	handler := gw.Handler()
@@ -181,7 +181,7 @@ func TestChatBadRequest(t *testing.T) {
 	ws := &workspace.Workspace{
 		Identity: workspace.Identity{Name: "Bot"},
 	}
-	a := agent.NewWithClient("bot", "model", llm.URL, "key", ws, store, llm.Client())
+	a := agent.NewWithClient("bot", "model", "", llm.URL, "key", ws, store, llm.Client())
 	gw.RegisterAgent(a)
 
 	handler := gw.Handler()
@@ -214,7 +214,7 @@ func TestRateLimiting(t *testing.T) {
 		})
 	}))
 	defer llm.Close()
-	a := agent.NewWithClient("bot", "model", llm.URL, "key", ws, store, llm.Client())
+	a := agent.NewWithClient("bot", "model", "", llm.URL, "key", ws, store, llm.Client())
 	gw.RegisterAgent(a)
 
 	handler := gw.Handler()

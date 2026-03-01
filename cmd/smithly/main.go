@@ -1152,7 +1152,7 @@ func loadAgent(ac config.AgentConfig, cfg *config.Config, store db.Store, credSt
 		return nil, fmt.Errorf("load workspace for %s: %w", ac.ID, err)
 	}
 
-	a := agent.New(ac.ID, ac.Model, ac.BaseURL, ac.APIKey, ws, store)
+	a := agent.New(ac.ID, ac.Model, ac.Provider, ac.BaseURL, ac.APIKey, ws, store)
 	a.MaxContext = ac.MaxContext
 
 	// Configure cost-based spending limits

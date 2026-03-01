@@ -125,7 +125,7 @@ func newTestAgent(t *testing.T, srv *httptest.Server) *agent.Agent {
 
 	// Load from empty dir gives default system prompt
 	ws, _ := workspace.Load("")
-	a := agent.NewWithClient("test-agent", "test-model", srv.URL, "test-key", ws, store, srv.Client())
+	a := agent.NewWithClient("test-agent", "test-model", "", srv.URL, "test-key", ws, store, srv.Client())
 	return a
 }
 

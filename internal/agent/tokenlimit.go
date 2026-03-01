@@ -28,16 +28,39 @@ type ModelPricing struct {
 // Known model pricing (dollars per million tokens).
 var knownPricing = map[string]ModelPricing{
 	// Anthropic
-	"claude-sonnet-4-6-20250514":  {InputPerMillion: 3.0, OutputPerMillion: 15.0, CachedInputPerMillion: 0.30},
-	"claude-sonnet-4-5-20250514":  {InputPerMillion: 3.0, OutputPerMillion: 15.0, CachedInputPerMillion: 0.30},
-	"claude-haiku-4-5-20251001":   {InputPerMillion: 0.80, OutputPerMillion: 4.0, CachedInputPerMillion: 0.08},
-	"claude-opus-4-6":             {InputPerMillion: 15.0, OutputPerMillion: 75.0, CachedInputPerMillion: 1.50},
-	// OpenAI
+	"claude-opus-4-6":            {InputPerMillion: 15.0, OutputPerMillion: 75.0, CachedInputPerMillion: 1.50},
+	"claude-sonnet-4-6":          {InputPerMillion: 3.0, OutputPerMillion: 15.0, CachedInputPerMillion: 0.30},
+	"claude-sonnet-4-6-20250514": {InputPerMillion: 3.0, OutputPerMillion: 15.0, CachedInputPerMillion: 0.30},
+	"claude-sonnet-4-5-20250929": {InputPerMillion: 3.0, OutputPerMillion: 15.0, CachedInputPerMillion: 0.30},
+	"claude-sonnet-4-5-20250514": {InputPerMillion: 3.0, OutputPerMillion: 15.0, CachedInputPerMillion: 0.30},
+	"claude-haiku-4-5-20251001":  {InputPerMillion: 0.80, OutputPerMillion: 4.0, CachedInputPerMillion: 0.08},
+	// OpenAI — GPT-5.x + Codex (Responses API)
+	"gpt-5.3-codex": {InputPerMillion: 1.75, OutputPerMillion: 14.0, CachedInputPerMillion: 0.175},
+	"gpt-5.2-codex": {InputPerMillion: 1.75, OutputPerMillion: 14.0, CachedInputPerMillion: 0.175},
+	"gpt-5.2":       {InputPerMillion: 1.75, OutputPerMillion: 14.0, CachedInputPerMillion: 0.175},
+	"gpt-5.1-codex": {InputPerMillion: 1.25, OutputPerMillion: 10.0, CachedInputPerMillion: 0.125},
+	"gpt-5.1":       {InputPerMillion: 1.25, OutputPerMillion: 10.0, CachedInputPerMillion: 0.125},
+	"gpt-5":         {InputPerMillion: 1.25, OutputPerMillion: 10.0, CachedInputPerMillion: 0.125},
+	"gpt-5-mini":    {InputPerMillion: 0.25, OutputPerMillion: 2.0, CachedInputPerMillion: 0.025},
+	"gpt-5-nano":    {InputPerMillion: 0.05, OutputPerMillion: 0.40, CachedInputPerMillion: 0.005},
+	// OpenAI — GPT-4.1
+	"gpt-4.1":      {InputPerMillion: 2.0, OutputPerMillion: 8.0, CachedInputPerMillion: 0.50},
+	"gpt-4.1-mini": {InputPerMillion: 0.40, OutputPerMillion: 1.60, CachedInputPerMillion: 0.10},
+	"gpt-4.1-nano": {InputPerMillion: 0.10, OutputPerMillion: 0.40, CachedInputPerMillion: 0.025},
+	// OpenAI — GPT-4o
 	"gpt-4o":      {InputPerMillion: 2.50, OutputPerMillion: 10.0, CachedInputPerMillion: 1.25},
 	"gpt-4o-mini": {InputPerMillion: 0.15, OutputPerMillion: 0.60, CachedInputPerMillion: 0.075},
-	"o3":          {InputPerMillion: 10.0, OutputPerMillion: 40.0, CachedInputPerMillion: 2.50},
-	"o3-mini":     {InputPerMillion: 1.10, OutputPerMillion: 4.40, CachedInputPerMillion: 0.55},
-	"o4-mini":     {InputPerMillion: 1.10, OutputPerMillion: 4.40, CachedInputPerMillion: 0.55},
+	// OpenAI — o-series
+	"o3":      {InputPerMillion: 2.0, OutputPerMillion: 8.0, CachedInputPerMillion: 0.50},
+	"o3-mini": {InputPerMillion: 1.10, OutputPerMillion: 4.40, CachedInputPerMillion: 0.55},
+	"o4-mini": {InputPerMillion: 1.10, OutputPerMillion: 4.40, CachedInputPerMillion: 0.275},
+	// Gemini
+	"gemini-3.1-pro-preview": {InputPerMillion: 2.0, OutputPerMillion: 12.0, CachedInputPerMillion: 0.20},
+	"gemini-3-pro-preview":   {InputPerMillion: 2.0, OutputPerMillion: 12.0, CachedInputPerMillion: 0.20},
+	"gemini-3-flash-preview": {InputPerMillion: 0.50, OutputPerMillion: 3.0, CachedInputPerMillion: 0.05},
+	"gemini-2.5-pro":         {InputPerMillion: 1.25, OutputPerMillion: 10.0, CachedInputPerMillion: 0.125},
+	"gemini-2.5-flash":       {InputPerMillion: 0.30, OutputPerMillion: 2.50, CachedInputPerMillion: 0.03},
+	"gemini-2.5-flash-lite":  {InputPerMillion: 0.10, OutputPerMillion: 0.40, CachedInputPerMillion: 0.01},
 }
 
 // LookupPricing returns pricing for a model, falling back to Sonnet 4.6 if unknown.

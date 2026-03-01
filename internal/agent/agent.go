@@ -4,12 +4,9 @@
 package agent
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -39,29 +36,30 @@ type Agent struct {
 	Skills      *skills.Registry
 	Services    *Services
 	CodeRunner  sandbox.Provider
-	client      *http.Client
+	LLM         LLMClient
 }
 
 // New creates a new agent.
-func New(id, model, baseURL, apiKey string, ws *workspace.Workspace, store db.Store) *Agent {
-	return NewWithClient(id, model, baseURL, apiKey, ws, store, &http.Client{})
+func New(id, model, provider, baseURL, apiKey string, ws *workspace.Workspace, store db.Store) *Agent {
+	return NewWithClient(id, model, provider, baseURL, apiKey, ws, store, &http.Client{})
 }
 
 // NewWithClient creates a new agent with a custom HTTP client (for testing).
-func NewWithClient(id, model, baseURL, apiKey string, ws *workspace.Workspace, store db.Store, client *http.Client) *Agent {
+func NewWithClient(id, model, provider, baseURL, apiKey string, ws *workspace.Workspace, store db.Store, client *http.Client) *Agent {
 	if baseURL == "" {
 		baseURL = "https://api.openai.com/v1"
 	}
+	baseURL = strings.TrimRight(baseURL, "/")
 	return &Agent{
 		ID:        id,
 		Model:     model,
-		BaseURL:   strings.TrimRight(baseURL, "/"),
+		BaseURL:   baseURL,
 		APIKey:    apiKey,
 		Workspace: ws,
 		Store:     store,
 		Tools:     tools.NewRegistry(),
 		Skills:    skills.NewRegistry(),
-		client:    client,
+		LLM:       NewLLMClientForModel(provider, model, baseURL, apiKey, client),
 	}
 }
 
@@ -193,7 +191,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, cb *Callbacks) (st
 	const maxIterations = 20
 	ld := newLoopDetector()
 	for i := 0; i < maxIterations; i++ {
-		response, err := a.sendChat(ctx, messages, toolDefs, cb.OnDelta)
+		response, err := a.LLM.SendChat(ctx, a.Model, messages, toolDefs, cb.OnDelta)
 		if err != nil {
 			return "", err
 		}
@@ -331,154 +329,3 @@ func (a *Agent) trackCost(resp *llmResponse) *CostWindow {
 	return recordCostWindows(a.CostWindows, cost)
 }
 
-func (a *Agent) sendChat(ctx context.Context, messages []chatMessage, toolDefs []tools.OpenAITool, onDelta func(string)) (*llmResponse, error) {
-	reqBody := chatRequest{
-		Model:    a.Model,
-		Messages: messages,
-		Tools:    toolDefs,
-		Stream:   onDelta != nil,
-	}
-
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, err
-	}
-
-	url := a.BaseURL + "/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if a.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+a.APIKey)
-	}
-
-	resp, err := a.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("llm request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		errBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("llm returned %d: %s", resp.StatusCode, string(errBody))
-	}
-
-	if onDelta != nil {
-		return a.readStream(resp.Body, onDelta)
-	}
-	return a.readFull(resp.Body)
-}
-
-func (a *Agent) readStream(body io.Reader, onDelta func(string)) (*llmResponse, error) {
-	scanner := bufio.NewScanner(body)
-	// Increase scanner buffer for large responses
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-
-	var contentBuf strings.Builder
-	toolCallMap := make(map[int]*toolCall)
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
-			break
-		}
-
-		var chunk struct {
-			Choices []struct {
-				Delta struct {
-					Content   string `json:"content"`
-					ToolCalls []struct {
-						Index    int    `json:"index"`
-						ID       string `json:"id"`
-						Type     string `json:"type"`
-						Function struct {
-							Name      string `json:"name"`
-							Arguments string `json:"arguments"`
-						} `json:"function"`
-					} `json:"tool_calls"`
-				} `json:"delta"`
-				FinishReason string `json:"finish_reason"`
-			} `json:"choices"`
-		}
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
-		}
-		if len(chunk.Choices) == 0 {
-			continue
-		}
-
-		delta := chunk.Choices[0].Delta
-
-		// Stream text content
-		if delta.Content != "" {
-			contentBuf.WriteString(delta.Content)
-			onDelta(delta.Content)
-		}
-
-		// Accumulate tool calls
-		for _, tc := range delta.ToolCalls {
-			existing, ok := toolCallMap[tc.Index]
-			if !ok {
-				toolCallMap[tc.Index] = &toolCall{
-					ID:   tc.ID,
-					Type: tc.Type,
-					Function: functionCall{
-						Name:      tc.Function.Name,
-						Arguments: tc.Function.Arguments,
-					},
-				}
-			} else {
-				// Append streamed arguments
-				if tc.Function.Arguments != "" {
-					existing.Function.Arguments += tc.Function.Arguments
-				}
-			}
-		}
-	}
-
-	resp := &llmResponse{Content: contentBuf.String()}
-	for i := 0; i < len(toolCallMap); i++ {
-		if tc, ok := toolCallMap[i]; ok {
-			resp.ToolCalls = append(resp.ToolCalls, *tc)
-		}
-	}
-
-	return resp, scanner.Err()
-}
-
-func (a *Agent) readFull(body io.Reader) (*llmResponse, error) {
-	var apiResp struct {
-		Choices []struct {
-			Message struct {
-				Content   string     `json:"content"`
-				ToolCalls []toolCall `json:"tool_calls"`
-			} `json:"message"`
-		} `json:"choices"`
-		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-			CacheReadTokens  int `json:"cache_read_input_tokens"`  // Anthropic
-			CachedTokens     int `json:"prompt_tokens_details"`    // OpenAI (simplified)
-		} `json:"usage"`
-	}
-	if err := json.NewDecoder(body).Decode(&apiResp); err != nil {
-		return nil, fmt.Errorf("decode llm response: %w", err)
-	}
-	if len(apiResp.Choices) == 0 {
-		return nil, fmt.Errorf("llm returned no choices")
-	}
-
-	return &llmResponse{
-		Content:      apiResp.Choices[0].Message.Content,
-		ToolCalls:    apiResp.Choices[0].Message.ToolCalls,
-		PromptTokens: apiResp.Usage.PromptTokens,
-		OutputTokens: apiResp.Usage.CompletionTokens,
-		CachedTokens: apiResp.Usage.CacheReadTokens + apiResp.Usage.CachedTokens,
-	}, nil
-}
