@@ -136,7 +136,7 @@ func (c *CLI) runRaw(ctx context.Context, stdin *os.File) error {
 		fmt.Fprint(out, strings.ReplaceAll(s, "\n", "\r\n"))
 	}
 
-	rprint(fmt.Sprintf("Smithly — chatting with %s (%d tools, 'exit' to quit, ESC to interrupt)\r\n", name, toolCount))
+	rprint(fmt.Sprintf("Smithly — chatting with %s (%d tools, 'exit' to quit, ESC to type ahead)\r\n", name, toolCount))
 	if len(c.Agent.CostWindows) > 0 {
 		rprint("  Cost limits active. Note: cost estimates are approximate and may not\r\n")
 		rprint("  match your provider's billing. Monitor your provider dashboard.\r\n")
@@ -157,12 +157,20 @@ func (c *CLI) runRaw(ctx context.Context, stdin *os.File) error {
 		}
 	}()
 
+	var typeAhead string
 	for {
-		rprint("you> ")
-		line, ok := readRawLine(bytesCh, out)
-		if !ok {
-			rprint("\r\n")
-			break
+		var line string
+		if typeAhead != "" {
+			line = typeAhead
+			typeAhead = ""
+		} else {
+			rprint("you> ")
+			var ok bool
+			line, ok = readRawLine(bytesCh, out)
+			if !ok {
+				rprint("\r\n")
+				break
+			}
 		}
 		if line == "" {
 			continue
@@ -175,7 +183,8 @@ func (c *CLI) runRaw(ctx context.Context, stdin *os.File) error {
 		rprint(fmt.Sprintf("\r\n%s> ", name))
 
 		queryCtx, cancelQuery := context.WithCancel(ctx)
-		interrupted := c.runWithInterrupt(queryCtx, cancelQuery, bytesCh, line, name, rprint)
+		var interrupted bool
+		typeAhead, interrupted = c.runWithInterrupt(queryCtx, cancelQuery, bytesCh, line, name, rprint)
 		cancelQuery()
 
 		if interrupted {
@@ -220,8 +229,9 @@ func readRawLine(bytesCh <-chan byte, out io.Writer) (string, bool) {
 	return "", false // channel closed (stdin EOF)
 }
 
-// runWithInterrupt runs the agent and watches bytesCh for ESC, offering a
-// confirmation prompt before cancelling. Returns true if the user interrupted.
+// runWithInterrupt runs the agent and watches bytesCh for ESC (type-ahead)
+// and Ctrl+C (cancel). On ESC the agent keeps running while the user types
+// their next message. Returns the type-ahead text and whether interrupted.
 func (c *CLI) runWithInterrupt(
 	ctx context.Context,
 	cancel context.CancelFunc,
@@ -229,9 +239,9 @@ func (c *CLI) runWithInterrupt(
 	input string,
 	name string,
 	rprint func(string),
-) bool {
-	// mu guards writes to output so the interrupt prompt never interleaves with
-	// streaming tokens; paused suppresses OnDelta while the prompt is shown.
+) (string, bool) {
+	// mu guards writes to output so the type-ahead prompt never interleaves
+	// with streaming tokens; paused suppresses callbacks after ESC.
 	var mu sync.Mutex
 	paused := false
 
@@ -251,22 +261,30 @@ func (c *CLI) runWithInterrupt(
 		OnToolCall: func(toolName string, args string) {
 			mu.Lock()
 			defer mu.Unlock()
-			rprintLocked(fmt.Sprintf("\r\n  [tool: %s]\r\n", toolName))
+			if !paused {
+				rprintLocked(fmt.Sprintf("\r\n  [tool: %s]\r\n", toolName))
+			}
 		},
 		OnToolResult: func(toolName string, result string) {
 			mu.Lock()
 			defer mu.Unlock()
-			summary := result
-			if len(summary) > 200 {
-				summary = summary[:200] + "..."
+			if !paused {
+				summary := result
+				if len(summary) > 200 {
+					summary = summary[:200] + "..."
+				}
+				for _, l := range strings.Split(summary, "\n") {
+					rprintLocked(fmt.Sprintf("  | %s\r\n", l))
+				}
+				rprintLocked("\r\n")
 			}
-			for _, l := range strings.Split(summary, "\n") {
-				rprintLocked(fmt.Sprintf("  | %s\r\n", l))
-			}
-			rprintLocked("\r\n")
 		},
 		Approve: func(toolName string, description string) bool {
 			mu.Lock()
+			if paused {
+				mu.Unlock()
+				return false // auto-deny: user can't see the prompt
+			}
 			rprintLocked(fmt.Sprintf("\r\n  [%s requires approval]\r\n  %s\r\n  Allow? [y/N]: ", toolName, description))
 			mu.Unlock()
 			select {
@@ -285,7 +303,9 @@ func (c *CLI) runWithInterrupt(
 		OnPaused: func(window string, remaining time.Duration) {
 			mu.Lock()
 			defer mu.Unlock()
-			rprintLocked(fmt.Sprintf("\r\n  [paused] %s spending limit reached. Resets in %s.\r\n\r\n", window, remaining.Round(time.Minute)))
+			if !paused {
+				rprintLocked(fmt.Sprintf("\r\n  [paused] %s spending limit reached. Resets in %s.\r\n\r\n", window, remaining.Round(time.Minute)))
+			}
 		},
 	}
 
@@ -302,65 +322,84 @@ func (c *CLI) runWithInterrupt(
 			if r.err != nil && r.err != context.Canceled {
 				rprint(fmt.Sprintf("\r\nerror: %v\r\n", r.err))
 			}
-			return false
+			return "", false
 
 		case b, ok := <-bytesCh:
 			if !ok {
 				// stdin closed — cancel and drain
 				cancel()
 				<-resultCh
-				return false
+				return "", false
 			}
 
-			// Ctrl+C: immediate interrupt, no confirmation
+			// Ctrl+C: immediate cancel
 			if b == 0x03 {
 				rprint("^C\r\n")
 				cancel()
 				<-resultCh
-				return true
+				return "", true
 			}
 
 			if b != 0x1b {
 				continue // ignore other input while agent runs
 			}
 
-			// ESC: pause streaming output and ask for confirmation
+			// ESC: pause streaming output, enter type-ahead mode.
+			// The agent continues running in the background.
 			mu.Lock()
 			paused = true
-			rprintLocked("\r\n\r\n  Stop current response? [y/N]: ")
 			mu.Unlock()
+			rprint("\r\n  (Ctrl+C to cancel)\r\nyou> ")
 
-			// Read single-key answer (or let agent finish naturally)
-			var answer byte
-			select {
-			case a, ok := <-bytesCh:
-				if ok {
-					answer = a
+			// Type-ahead loop: collect input while agent finishes.
+			// Use nil-channel trick: once resultCh fires, stop selecting it.
+			var buf []byte
+			activeResultCh := (<-chan chatResult)(resultCh)
+			for {
+				select {
+				case <-activeResultCh:
+					activeResultCh = nil // agent done, keep collecting input
+
+				case tb, ok := <-bytesCh:
+					if !ok {
+						if activeResultCh != nil {
+							cancel()
+							<-resultCh
+						}
+						return "", false
+					}
+					switch tb {
+					case '\r', '\n':
+						rprint("\r\n")
+						if activeResultCh != nil {
+							<-resultCh // wait for agent to finish
+						}
+						return string(buf), false
+					case 0x7f, '\b':
+						if len(buf) > 0 {
+							buf = buf[:len(buf)-1]
+							rprint("\b \b")
+						}
+					case 0x03:
+						rprint("^C\r\n")
+						if activeResultCh != nil {
+							cancel()
+							<-resultCh
+						}
+						return "", true
+					case 0x1b: // ESC again — clear the line
+						for len(buf) > 0 {
+							rprint("\b \b")
+							buf = buf[:len(buf)-1]
+						}
+					default:
+						if tb >= 0x20 && tb < 0x7f {
+							buf = append(buf, tb)
+							rprint(fmt.Sprintf("%c", tb))
+						}
+					}
 				}
-			case <-resultCh:
-				// Agent finished while we waited — resume normally
-				mu.Lock()
-				paused = false
-				mu.Unlock()
-				rprint("\r\n")
-				return false
 			}
-
-			mu.Lock()
-			paused = false
-			if answer != 0 {
-				rprintLocked(fmt.Sprintf("%c\r\n", answer))
-			}
-			mu.Unlock()
-
-			if answer == 'y' || answer == 'Y' {
-				cancel()
-				<-resultCh
-				return true
-			}
-
-			// User said no — agent still running, show it
-			rprint(fmt.Sprintf("%s> ", name))
 		}
 	}
 }
