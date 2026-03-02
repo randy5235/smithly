@@ -33,6 +33,7 @@ type Store interface {
 	AppendMessage(ctx context.Context, msg *Message) error
 	GetMessages(ctx context.Context, agentID string, limit int) ([]*Message, error)
 	GetMessagesByID(ctx context.Context, agentID string, beforeID int64, limit int) ([]*Message, error)
+	GetMessagesByIDs(ctx context.Context, agentID string, ids []int64) ([]*Message, error)
 	SearchMessages(ctx context.Context, agentID, query string, limit int) ([]*Message, error)
 	SearchMessagesFTS(ctx context.Context, agentID, query string, limit int) ([]*SearchResult, error)
 	InsertSummary(ctx context.Context, agentID, summary string) error

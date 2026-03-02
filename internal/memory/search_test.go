@@ -13,9 +13,9 @@ import (
 // mockStore implements the subset of db.Store needed by Searcher.
 type mockStore struct {
 	db.Store // embed to satisfy interface; panics on unimplemented methods
-	ftsResults  []*db.SearchResult
-	embeddings  []db.MemoryEmbedding
-	messages    []*db.Message
+	ftsResults []*db.SearchResult
+	embeddings []db.MemoryEmbedding
+	messages   []*db.Message
 }
 
 func (m *mockStore) SearchMessagesFTS(_ context.Context, _, _ string, _ int) ([]*db.SearchResult, error) {
@@ -28,6 +28,20 @@ func (m *mockStore) GetEmbeddings(_ context.Context, _ string) ([]db.MemoryEmbed
 
 func (m *mockStore) GetMessages(_ context.Context, _ string, _ int) ([]*db.Message, error) {
 	return m.messages, nil
+}
+
+func (m *mockStore) GetMessagesByIDs(_ context.Context, _ string, ids []int64) ([]*db.Message, error) {
+	idSet := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		idSet[id] = struct{}{}
+	}
+	var result []*db.Message
+	for _, msg := range m.messages {
+		if _, ok := idSet[msg.ID]; ok {
+			result = append(result, msg)
+		}
+	}
+	return result, nil
 }
 
 // mockEmbedder returns a fixed vector for any input.

@@ -48,6 +48,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"GetUnembeddedMessages", testGetUnembeddedMessages},
 		{"FTSTriggerSync", testFTSTriggerSync},
 		{"GetMessagesByID", testGetMessagesByID},
+		{"GetMessagesByIDs", testGetMessagesByIDs},
 		{"AppendMessageSetsID", testAppendMessageSetsID},
 		{"MigrateIdempotent", testMigrateIdempotent},
 	}
@@ -786,6 +787,67 @@ func testGetMessagesByID(t *testing.T, store db.Store) {
 	}
 	if msgs[2].Content != "msg 4" {
 		t.Errorf("last = %q, want 'msg 4'", msgs[2].Content)
+	}
+}
+
+func testGetMessagesByIDs(t *testing.T, store db.Store) {
+	ctx := context.Background()
+	if err := store.CreateAgent(ctx, &db.Agent{ID: "agent1", Model: "m", WorkspacePath: "w"}); err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+
+	// Insert 5 messages
+	var ids []int64
+	for i := range 5 {
+		msg := &db.Message{
+			AgentID: "agent1", Role: "user",
+			Content: fmt.Sprintf("msg %d", i),
+			Source:  "cli", Trust: "trusted",
+		}
+		if err := store.AppendMessage(ctx, msg); err != nil {
+			t.Fatalf("AppendMessage: %v", err)
+		}
+		ids = append(ids, msg.ID)
+	}
+
+	// Fetch specific IDs (0, 2, 4)
+	want := []int64{ids[0], ids[2], ids[4]}
+	msgs, err := store.GetMessagesByIDs(ctx, "agent1", want)
+	if err != nil {
+		t.Fatalf("GetMessagesByIDs: %v", err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("len = %d, want 3", len(msgs))
+	}
+	if msgs[0].Content != "msg 0" {
+		t.Errorf("first = %q, want 'msg 0'", msgs[0].Content)
+	}
+	if msgs[1].Content != "msg 2" {
+		t.Errorf("second = %q, want 'msg 2'", msgs[1].Content)
+	}
+	if msgs[2].Content != "msg 4" {
+		t.Errorf("third = %q, want 'msg 4'", msgs[2].Content)
+	}
+
+	// Empty IDs returns nil
+	msgs, err = store.GetMessagesByIDs(ctx, "agent1", nil)
+	if err != nil {
+		t.Fatalf("GetMessagesByIDs(nil): %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("empty IDs should return empty, got %d", len(msgs))
+	}
+
+	// IDs from different agent should return empty
+	if err := store.CreateAgent(ctx, &db.Agent{ID: "agent2", Model: "m", WorkspacePath: "w"}); err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	msgs, err = store.GetMessagesByIDs(ctx, "agent2", want)
+	if err != nil {
+		t.Fatalf("GetMessagesByIDs(agent2): %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("different agent should return empty, got %d", len(msgs))
 	}
 }
 

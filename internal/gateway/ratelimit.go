@@ -14,6 +14,7 @@ type rateLimiter struct {
 	window   time.Duration
 	maxReqs  int
 	cleanAge time.Duration // evict entries older than this
+	stop     chan struct{}
 }
 
 type clientWindow struct {
@@ -26,15 +27,28 @@ func newRateLimiter(window time.Duration, maxReqs int) *rateLimiter {
 		window:   window,
 		maxReqs:  maxReqs,
 		cleanAge: 5 * time.Minute,
+		stop:     make(chan struct{}),
 	}
-	// Background cleanup every minute
-	go func() {
-		for {
-			time.Sleep(time.Minute)
-			rl.cleanup()
-		}
-	}()
+	go rl.cleanupLoop()
 	return rl
+}
+
+// Close stops the background cleanup goroutine.
+func (rl *rateLimiter) Close() {
+	close(rl.stop)
+}
+
+func (rl *rateLimiter) cleanupLoop() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			rl.cleanup()
+		case <-rl.stop:
+			return
+		}
+	}
 }
 
 // allow checks if the IP is within rate limits. Returns true if allowed.

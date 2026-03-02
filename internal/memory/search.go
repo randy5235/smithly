@@ -108,21 +108,14 @@ func (s *Searcher) semanticSearch(ctx context.Context, agentID, query string, li
 		candidates = candidates[:limit]
 	}
 
-	// Fetch full messages
-	results := make([]Result, 0, len(candidates))
-	for _, c := range candidates {
-		// Re-use SearchMessagesFTS isn't ideal; get messages individually.
-		// For small datasets this is fine.
-		trustWeight := trustScore(c.trust)
-		score := 0.7*c.sim + 0.3*trustWeight
-		results = append(results, Result{
-			Message: db.Message{ID: c.memoryID},
-			Score:   score,
-		})
+	// Collect IDs for batch hydration
+	ids := make([]int64, len(candidates))
+	for i, c := range candidates {
+		ids[i] = c.memoryID
 	}
 
-	// Hydrate messages by fetching from store
-	msgs, err := s.store.GetMessages(ctx, agentID, 10000)
+	// Batch fetch only the messages we need
+	msgs, err := s.store.GetMessagesByIDs(ctx, agentID, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -130,14 +123,16 @@ func (s *Searcher) semanticSearch(ctx context.Context, agentID, query string, li
 	for _, m := range msgs {
 		msgMap[m.ID] = m
 	}
-	hydrated := make([]Result, 0, len(results))
-	for _, r := range results {
-		if m, ok := msgMap[r.Message.ID]; ok {
-			r.Message = *m
-			hydrated = append(hydrated, r)
+
+	results := make([]Result, 0, len(candidates))
+	for _, c := range candidates {
+		trustWeight := trustScore(c.trust)
+		score := 0.7*c.sim + 0.3*trustWeight
+		if m, ok := msgMap[c.memoryID]; ok {
+			results = append(results, Result{Message: *m, Score: score})
 		}
 	}
-	return hydrated, nil
+	return results, nil
 }
 
 func (s *Searcher) hybridSearch(ctx context.Context, agentID, query string, limit int) ([]Result, error) {
@@ -199,7 +194,11 @@ func (s *Searcher) hybridSearch(ctx context.Context, agentID, query string, limi
 
 	// Hydrate vector-only candidates
 	if topN > 0 {
-		msgs, err := s.store.GetMessages(ctx, agentID, 10000)
+		ids := make([]int64, topN)
+		for i := 0; i < topN; i++ {
+			ids[i] = vecCandidates[i].memoryID
+		}
+		msgs, err := s.store.GetMessagesByIDs(ctx, agentID, ids)
 		if err == nil {
 			msgMap := make(map[int64]*db.Message, len(msgs))
 			for _, m := range msgs {

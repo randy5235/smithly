@@ -264,6 +264,46 @@ func (s *Store) GetMessages(ctx context.Context, agentID string, limit int) ([]*
 	return msgs, nil
 }
 
+func (s *Store) GetMessagesByIDs(ctx context.Context, agentID string, ids []int64) ([]*db.Message, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	placeholders := make([]string, len(ids))
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, agentID)
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+
+	query := fmt.Sprintf(
+		`SELECT id, agent_id, role, content, source, trust, created_at
+		 FROM memory
+		 WHERE agent_id = ? AND id IN (%s) AND deleted = 0
+		 ORDER BY id`,
+		strings.Join(placeholders, ","),
+	)
+
+	rows, err := s.conn.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []*db.Message
+	for rows.Next() {
+		m := &db.Message{}
+		var createdAt string
+		if err := rows.Scan(&m.ID, &m.AgentID, &m.Role, &m.Content, &m.Source, &m.Trust, &createdAt); err != nil {
+			return nil, err
+		}
+		m.CreatedAt = parseTime(createdAt)
+		msgs = append(msgs, m)
+	}
+	return msgs, rows.Err()
+}
+
 func (s *Store) SearchMessages(ctx context.Context, agentID, query string, limit int) ([]*db.Message, error) {
 	if limit <= 0 {
 		limit = 20

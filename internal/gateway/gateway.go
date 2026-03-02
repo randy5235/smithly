@@ -4,6 +4,7 @@ package gateway
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -101,8 +102,11 @@ func (g *Gateway) Start() error {
 	return g.server.Serve(ln)
 }
 
-// Shutdown gracefully stops the server.
+// Shutdown gracefully stops the server and releases resources.
 func (g *Gateway) Shutdown(ctx context.Context) error {
+	if g.limiter != nil {
+		g.limiter.Close()
+	}
 	if g.server != nil {
 		return g.server.Shutdown(ctx)
 	}
@@ -117,7 +121,7 @@ func (g *Gateway) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		token := strings.TrimPrefix(auth, "Bearer ")
-		if token != g.Token {
+		if subtle.ConstantTimeCompare([]byte(token), []byte(g.Token)) != 1 {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -221,7 +225,11 @@ func (g *Gateway) handleChatSSE(w http.ResponseWriter, r *http.Request, a *agent
 	w.Header().Set("Connection", "keep-alive")
 
 	send := func(event string, data any) {
-		payload, _ := json.Marshal(data)
+		payload, err := json.Marshal(data)
+		if err != nil {
+			slog.Error("SSE marshal failed", "event", event, "err", err)
+			return
+		}
 		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, payload)
 		rc.Flush()
 	}
