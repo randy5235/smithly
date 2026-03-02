@@ -6,8 +6,12 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 )
+
+// ErrNotFound is returned when a requested object does not exist.
+var ErrNotFound = errors.New("not found")
 
 // Object is a versioned record in the store. Every mutation creates a new
 // version — nothing is overwritten or hard-deleted.

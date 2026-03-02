@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -106,6 +107,7 @@ func readStream(body io.Reader, onDelta func(string)) (*llmResponse, error) {
 			} `json:"choices"`
 		}
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			slog.Warn("malformed SSE chunk", "err", err)
 			continue
 		}
 		if len(chunk.Choices) == 0 {

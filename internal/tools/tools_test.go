@@ -213,6 +213,81 @@ func TestListFilesTool(t *testing.T) {
 	}
 }
 
+func TestPathTraversalBlocked(t *testing.T) {
+	root := t.TempDir()
+	os.WriteFile(filepath.Join(root, "safe.txt"), []byte("ok"), 0644)
+
+	attacks := []struct {
+		name string
+		path string
+	}{
+		{"dotdot relative", "../../../etc/passwd"},
+		{"absolute path", "/etc/passwd"},
+		{"dotdot with subdir", "sub/../../etc/passwd"},
+		{"absolute with dotdot", "/tmp/../etc/passwd"},
+	}
+
+	t.Run("ReadFile", func(t *testing.T) {
+		rf := tools.NewReadFile(root)
+		for _, tc := range attacks {
+			t.Run(tc.name, func(t *testing.T) {
+				_, err := rf.Run(context.Background(), json.RawMessage(`{"path":"`+tc.path+`"}`))
+				if err == nil {
+					t.Error("expected path traversal to be blocked")
+				}
+			})
+		}
+		// Legit relative path should still work.
+		result, err := rf.Run(context.Background(), json.RawMessage(`{"path":"safe.txt"}`))
+		if err != nil {
+			t.Fatalf("legit path failed: %v", err)
+		}
+		if result != "ok" {
+			t.Errorf("result = %q", result)
+		}
+	})
+
+	t.Run("WriteFile", func(t *testing.T) {
+		wf := tools.NewWriteFile(root)
+		for _, tc := range attacks {
+			t.Run(tc.name, func(t *testing.T) {
+				_, err := wf.Run(context.Background(), json.RawMessage(`{"path":"`+tc.path+`","content":"pwned"}`))
+				if err == nil {
+					t.Error("expected path traversal to be blocked")
+				}
+			})
+		}
+	})
+
+	t.Run("ListFiles", func(t *testing.T) {
+		lf := tools.NewListFiles(root)
+		for _, tc := range attacks {
+			t.Run(tc.name, func(t *testing.T) {
+				_, err := lf.Run(context.Background(), json.RawMessage(`{"path":"`+tc.path+`"}`))
+				if err == nil {
+					t.Error("expected path traversal to be blocked")
+				}
+			})
+		}
+	})
+}
+
+func TestNoRootDirAllowsAnything(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+	os.WriteFile(path, []byte("allowed"), 0644)
+
+	// With no rootDir, absolute paths should work (no sandbox).
+	rf := tools.NewReadFile("")
+	result, err := rf.Run(context.Background(), json.RawMessage(`{"path":"`+path+`"}`))
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if result != "allowed" {
+		t.Errorf("result = %q", result)
+	}
+}
+
 func TestSearchTool(t *testing.T) {
 	s := tools.NewSearch()
 	if s.NeedsApproval() {

@@ -140,7 +140,7 @@ func (g *Gateway) handleListAgents(w http.ResponseWriter, r *http.Request) {
 		Model  string `json:"model"`
 		Paused bool   `json:"paused"`
 	}
-	var agents []agentInfo
+	agents := []agentInfo{}
 	for _, a := range g.agents {
 		agents = append(agents, agentInfo{
 			ID:     a.ID,
@@ -154,6 +154,11 @@ func (g *Gateway) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// chatTimeout is the per-request write deadline for the chat endpoint.
+// Agent loops can run many LLM round-trips, so this must be much longer
+// than the server-level WriteTimeout (which covers regular endpoints).
+const chatTimeout = 5 * time.Minute
+
 func (g *Gateway) handleChat(w http.ResponseWriter, r *http.Request) {
 	agentID := r.PathValue("id")
 
@@ -166,14 +171,27 @@ func (g *Gateway) handleChat(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Message string `json:"message"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 
+	// Detect whether the client wants SSE streaming.
+	if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+		g.handleChatSSE(w, r, a, req.Message)
+		return
+	}
+
+	// Non-streaming JSON response. Extend the write deadline so the agent
+	// loop has enough time to complete multiple LLM round-trips.
+	rc := http.NewResponseController(w)
+	if err := rc.SetWriteDeadline(time.Now().Add(chatTimeout)); err != nil {
+		slog.Warn("could not extend write deadline", "err", err)
+	}
+
 	response, err := a.Chat(r.Context(), req.Message, &agent.Callbacks{Source: "api"})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
@@ -181,4 +199,51 @@ func (g *Gateway) handleChat(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(map[string]string{"response": response}); err != nil {
 		slog.Error("chat response write failed", "err", err)
 	}
+}
+
+// handleChatSSE streams agent events as Server-Sent Events.
+//
+// Event types:
+//
+//	delta         – streamed token of assistant text  {"token":"..."}
+//	tool_call     – agent invoked a tool              {"name":"...","args":"..."}
+//	tool_result   – tool returned a result            {"name":"...","result":"..."}
+//	done          – final response                    {"response":"..."}
+//	error         – agent error                       {"error":"..."}
+func (g *Gateway) handleChatSSE(w http.ResponseWriter, r *http.Request, a *agent.Agent, message string) {
+	rc := http.NewResponseController(w)
+	if err := rc.SetWriteDeadline(time.Now().Add(chatTimeout)); err != nil {
+		slog.Warn("could not extend write deadline for SSE", "err", err)
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	send := func(event string, data any) {
+		payload, _ := json.Marshal(data)
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, payload)
+		rc.Flush()
+	}
+
+	cb := &agent.Callbacks{
+		Source: "api",
+		OnDelta: func(token string) {
+			send("delta", map[string]string{"token": token})
+		},
+		OnToolCall: func(name, args string) {
+			send("tool_call", map[string]string{"name": name, "args": args})
+		},
+		OnToolResult: func(name, result string) {
+			send("tool_result", map[string]string{"name": name, "result": result})
+		},
+	}
+
+	response, err := a.Chat(r.Context(), message, cb)
+	if err != nil {
+		send("error", map[string]string{"error": "internal error"})
+		return
+	}
+
+	send("done", map[string]string{"response": response})
 }

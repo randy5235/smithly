@@ -44,15 +44,7 @@ func (n *testNotifier) Send(_ context.Context, title, message string, priority i
 func setupSidecar(t *testing.T) (*Sidecar, *testNotifier) {
 	t.Helper()
 
-	// SQLite for audit + store
-	d, err := sql.Open("sqlite", ":memory:?_journal_mode=WAL&_busy_timeout=5000")
-	if err != nil {
-		t.Fatal(err)
-	}
-	d.SetMaxOpenConns(1)
-	t.Cleanup(func() { d.Close() })
-
-	// Create audit table via sqlite.Store migration
+	// Audit store (agent runtime DB)
 	sqliteStore, err := sqlite.New(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -62,25 +54,18 @@ func setupSidecar(t *testing.T) (*Sidecar, *testNotifier) {
 	}
 	t.Cleanup(func() { sqliteStore.Close() })
 
-	// Create store_objects table
-	d2, err := sql.Open("sqlite", ":memory:?_journal_mode=WAL&_busy_timeout=5000")
+	// Object store (separate DB)
+	objDB, err := sql.Open("sqlite", ":memory:?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		t.Fatal(err)
 	}
-	d2.SetMaxOpenConns(1)
-	t.Cleanup(func() { d2.Close() })
+	objDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { objDB.Close() })
 
-	d2.Exec(`CREATE TABLE store_objects (
-		id TEXT NOT NULL,
-		version INTEGER NOT NULL,
-		type TEXT NOT NULL,
-		skill TEXT NOT NULL,
-		data TEXT NOT NULL,
-		public INTEGER DEFAULT 0,
-		deleted INTEGER DEFAULT 0,
-		created_at TEXT DEFAULT (datetime('now')),
-		PRIMARY KEY (id, version)
-	)`)
+	objStore := store.NewSQLite(objDB)
+	if err := objStore.EnsureSchema(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 
 	notifier := &testNotifier{}
 	secrets := testSecrets{
@@ -93,7 +78,7 @@ func setupSidecar(t *testing.T) (*Sidecar, *testNotifier) {
 		Port:     18791,
 		Notify:   notifier,
 		Audit:    sqliteStore,
-		ObjStore: store.NewSQLite(d2),
+		ObjStore: objStore,
 		Secrets:  secrets,
 	})
 

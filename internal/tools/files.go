@@ -9,6 +9,29 @@ import (
 	"strings"
 )
 
+// errPathEscape is returned when a path tries to escape the root directory.
+var errPathEscape = fmt.Errorf("path escapes root directory")
+
+// safePath resolves a user-provided path against rootDir, preventing
+// traversal outside the root via absolute paths or "../" sequences.
+// When rootDir is empty, any path is allowed (no sandbox).
+func safePath(rootDir, path string) (string, error) {
+	if rootDir == "" {
+		return path, nil
+	}
+	if filepath.IsAbs(path) {
+		return "", errPathEscape
+	}
+	resolved := filepath.Clean(filepath.Join(rootDir, path))
+
+	// Ensure the resolved path is still under rootDir.
+	root := filepath.Clean(rootDir) + string(os.PathSeparator)
+	if !strings.HasPrefix(resolved+string(os.PathSeparator), root) && resolved != filepath.Clean(rootDir) {
+		return "", errPathEscape
+	}
+	return resolved, nil
+}
+
 // ReadFile reads a file and returns its contents.
 type ReadFile struct {
 	rootDir string // if set, paths are relative to this directory
@@ -43,7 +66,10 @@ func (r *ReadFile) Run(ctx context.Context, args json.RawMessage) (string, error
 		return "", fmt.Errorf("parse args: %w", err)
 	}
 
-	path := r.resolvePath(params.Path)
+	path, err := safePath(r.rootDir, params.Path)
+	if err != nil {
+		return "", err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("read file: %w", err)
@@ -54,13 +80,6 @@ func (r *ReadFile) Run(ctx context.Context, args json.RawMessage) (string, error
 		content = content[:100000] + "\n\n[truncated — file too large]"
 	}
 	return content, nil
-}
-
-func (r *ReadFile) resolvePath(path string) string {
-	if r.rootDir != "" && !filepath.IsAbs(path) {
-		return filepath.Join(r.rootDir, path)
-	}
-	return path
 }
 
 // WriteFile writes content to a file. Requires approval.
@@ -102,7 +121,10 @@ func (w *WriteFile) Run(ctx context.Context, args json.RawMessage) (string, erro
 		return "", fmt.Errorf("parse args: %w", err)
 	}
 
-	path := w.resolvePath(params.Path)
+	path, err := safePath(w.rootDir, params.Path)
+	if err != nil {
+		return "", err
+	}
 
 	// Create parent directories
 	dir := filepath.Dir(path)
@@ -115,13 +137,6 @@ func (w *WriteFile) Run(ctx context.Context, args json.RawMessage) (string, erro
 	}
 
 	return fmt.Sprintf("Wrote %d bytes to %s", len(params.Content), params.Path), nil
-}
-
-func (w *WriteFile) resolvePath(path string) string {
-	if w.rootDir != "" && !filepath.IsAbs(path) {
-		return filepath.Join(w.rootDir, path)
-	}
-	return path
 }
 
 // ListFiles lists files in a directory.
@@ -161,8 +176,9 @@ func (l *ListFiles) Run(ctx context.Context, args json.RawMessage) (string, erro
 	if path == "" {
 		path = "."
 	}
-	if l.rootDir != "" && !filepath.IsAbs(path) {
-		path = filepath.Join(l.rootDir, path)
+	path, err := safePath(l.rootDir, path)
+	if err != nil {
+		return "", err
 	}
 
 	entries, err := os.ReadDir(path)

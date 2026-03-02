@@ -4,6 +4,7 @@ package gatekeeper
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"strings"
@@ -43,6 +44,11 @@ func (g *Gatekeeper) CheckDomain(ctx context.Context, domain string) bool {
 			slog.Error("gatekeeper: touch domain failed", "domain", domain, "err", err)
 		}
 		return entry.Status == "allow"
+	}
+	if !errors.Is(err, db.ErrNotFound) {
+		// Real DB error — log and deny (fail closed).
+		slog.Error("gatekeeper: domain lookup failed", "domain", domain, "err", err)
+		return false
 	}
 
 	// Check built-in defaults
@@ -87,7 +93,12 @@ func (g *Gatekeeper) SeedSkillDomains(ctx context.Context, domains []string, ski
 		d = normalizeDomain(d)
 
 		// Don't override existing entries (especially user denials)
-		if _, err := g.store.GetDomain(ctx, d); err == nil {
+		_, err := g.store.GetDomain(ctx, d)
+		if err == nil {
+			continue // already exists
+		}
+		if !errors.Is(err, db.ErrNotFound) {
+			slog.Error("gatekeeper: seed domain lookup failed", "domain", d, "err", err)
 			continue
 		}
 
@@ -118,13 +129,13 @@ func normalizeDomain(domain string) string {
 // defaultDomains returns the set of pre-approved domains.
 func defaultDomains() map[string]bool {
 	return map[string]bool{
-		"api.openai.com":    true,
-		"api.anthropic.com": true,
-		"openrouter.ai":     true,
-		"api.github.com":    true,
-		"ntfy.sh":           true,
-		"pypi.org":          true,
-		"registry.npmjs.org": true,
-		"raw.githubusercontent.com": true,
+		"api.openai.com":             true,
+		"api.anthropic.com":          true,
+		"openrouter.ai":              true,
+		"api.github.com":             true,
+		"ntfy.sh":                    true,
+		"pypi.org":                   true,
+		"registry.npmjs.org":         true,
+		"raw.githubusercontent.com":  true,
 	}
 }

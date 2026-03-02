@@ -5,6 +5,7 @@ package storetest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -135,6 +136,9 @@ func testAgentNotFound(t *testing.T, store db.Store) {
 	_, err := store.GetAgent(ctx, "nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent agent, got nil")
+	}
+	if !errors.Is(err, db.ErrNotFound) {
+		t.Errorf("expected db.ErrNotFound, got %v", err)
 	}
 }
 
@@ -437,6 +441,9 @@ func testDomainNotFound(t *testing.T, store db.Store) {
 	_, err := store.GetDomain(ctx, "nonexistent.com")
 	if err == nil {
 		t.Fatal("expected error for nonexistent domain, got nil")
+	}
+	if !errors.Is(err, db.ErrNotFound) {
+		t.Errorf("expected db.ErrNotFound, got %v", err)
 	}
 }
 

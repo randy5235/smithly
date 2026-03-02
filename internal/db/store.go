@@ -5,8 +5,12 @@ package db
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrNotFound is returned when a requested record does not exist.
+var ErrNotFound = errors.New("not found")
 
 // Store is the data access interface. Each backend implements this fully,
 // including its own migration strategy. SQLite uses embedded SQL files,

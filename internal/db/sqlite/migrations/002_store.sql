@@ -1,14 +1,4 @@
-CREATE TABLE IF NOT EXISTS store_objects (
-    id TEXT NOT NULL,
-    version INTEGER NOT NULL,
-    type TEXT NOT NULL,
-    skill TEXT NOT NULL,
-    data TEXT NOT NULL,
-    public INTEGER DEFAULT 0,
-    deleted INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT (datetime('now')),
-    PRIMARY KEY (id, version)
-);
-
-CREATE INDEX idx_store_type ON store_objects(type);
-CREATE INDEX idx_store_skill ON store_objects(skill);
+-- Migration 002: store_objects table.
+-- This table has been moved to the separate store database (internal/store).
+-- The store package now owns its own schema via store.EnsureSchema().
+-- This file is kept as a no-op to preserve migration version numbering.

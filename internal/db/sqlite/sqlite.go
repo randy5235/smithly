@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -17,6 +18,14 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+// wrapNotFound converts sql.ErrNoRows into db.ErrNotFound.
+func wrapNotFound(err error) error {
+	if errors.Is(err, sql.ErrNoRows) {
+		return db.ErrNotFound
+	}
+	return err
+}
 
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
@@ -39,11 +48,6 @@ func New(path string) (*Store, error) {
 
 func (s *Store) Close() error {
 	return s.conn.Close()
-}
-
-// DB returns the underlying *sql.DB, for use by the object store layer.
-func (s *Store) DB() *sql.DB {
-	return s.conn
 }
 
 // Migrate runs all pending SQL migration files in order.
@@ -559,7 +563,7 @@ func (s *Store) GetDomain(ctx context.Context, domain string) (*db.DomainEntry, 
 	var lastAccessed, requestedBy, notes sql.NullString
 	err := row.Scan(&d.Domain, &d.Status, &d.GrantedBy, &grantedAt, &lastAccessed, &d.AccessCount, &requestedBy, &notes)
 	if err != nil {
-		return nil, err
+		return nil, wrapNotFound(err)
 	}
 	d.GrantedAt = parseTime(grantedAt)
 	if lastAccessed.Valid {
@@ -627,7 +631,11 @@ type scannable interface {
 }
 
 func scanAgent(row *sql.Row) (*db.Agent, error) {
-	return scanAgentRow(row)
+	a, err := scanAgentRow(row)
+	if err != nil {
+		return nil, wrapNotFound(err)
+	}
+	return a, nil
 }
 
 func scanAgentRow(row scannable) (*db.Agent, error) {

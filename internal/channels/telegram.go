@@ -27,6 +27,7 @@ type Telegram struct {
 	BaseURL     string // override for testing (default "https://api.telegram.org/bot")
 	client      *http.Client
 	offset      int
+	cancel      context.CancelFunc // set by Start, called by Stop
 }
 
 // NewTelegram creates a Telegram channel adapter for the given agent.
@@ -38,8 +39,10 @@ func NewTelegram(token string, a *agent.Agent, autoApprove bool) *Telegram {
 	}
 }
 
-// Start implements Channel. It verifies the bot token and polls for updates until ctx is cancelled.
+// Start implements Channel. It verifies the bot token and polls for updates until ctx is cancelled or Stop is called.
 func (t *Telegram) Start(ctx context.Context) error {
+	ctx, t.cancel = context.WithCancel(ctx)
+
 	if t.BaseURL == "" {
 		t.BaseURL = "https://api.telegram.org/bot"
 	}
@@ -86,8 +89,11 @@ func (t *Telegram) Start(ctx context.Context) error {
 	}
 }
 
-// Stop implements Channel.
+// Stop implements Channel. It cancels the polling loop started by Start.
 func (t *Telegram) Stop() error {
+	if t.cancel != nil {
+		t.cancel()
+	}
 	return nil
 }
 

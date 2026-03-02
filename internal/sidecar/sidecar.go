@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -230,7 +231,8 @@ func (s *Sidecar) handleNotify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.notify.Send(r.Context(), req.Title, req.Message, req.Priority); err != nil {
-		jsonError(w, http.StatusInternalServerError, err.Error())
+		slog.Error("sidecar notify failed", "err", err)
+		jsonError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -263,7 +265,8 @@ func (s *Sidecar) handleAudit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.audit.LogAudit(r.Context(), entry); err != nil {
-		jsonError(w, http.StatusInternalServerError, err.Error())
+		slog.Error("sidecar audit failed", "err", err)
+		jsonError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -311,7 +314,8 @@ func (s *Sidecar) handleStorePut(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.objStore.Put(r.Context(), obj)
 	if err != nil {
-		jsonError(w, http.StatusBadRequest, err.Error())
+		slog.Error("sidecar store put failed", "err", err)
+		jsonError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -329,7 +333,12 @@ func (s *Sidecar) handleStoreGet(w http.ResponseWriter, r *http.Request) {
 
 	obj, err := s.objStore.Get(r.Context(), req.ID)
 	if err != nil {
-		jsonError(w, http.StatusNotFound, err.Error())
+		if errors.Is(err, store.ErrNotFound) {
+			jsonError(w, http.StatusNotFound, "not found")
+		} else {
+			slog.Error("sidecar store get failed", "err", err)
+			jsonError(w, http.StatusInternalServerError, "internal error")
+		}
 		return
 	}
 
@@ -354,7 +363,12 @@ func (s *Sidecar) handleStoreDelete(w http.ResponseWriter, r *http.Request) {
 
 	skill := skillFromContext(r.Context())
 	if err := s.objStore.Delete(r.Context(), req.ID, skill); err != nil {
-		jsonError(w, http.StatusBadRequest, err.Error())
+		if errors.Is(err, store.ErrNotFound) {
+			jsonError(w, http.StatusNotFound, "not found")
+		} else {
+			slog.Error("sidecar store delete failed", "err", err)
+			jsonError(w, http.StatusBadRequest, "delete failed")
+		}
 		return
 	}
 
@@ -373,7 +387,8 @@ func (s *Sidecar) handleStoreQuery(w http.ResponseWriter, r *http.Request) {
 
 	results, err := s.objStore.Query(r.Context(), &q)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, err.Error())
+		slog.Error("sidecar store query failed", "err", err)
+		jsonError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if results == nil {
@@ -395,7 +410,12 @@ func (s *Sidecar) handleStoreHistory(w http.ResponseWriter, r *http.Request) {
 	// Check visibility on latest version
 	latest, err := s.objStore.Get(r.Context(), req.ID)
 	if err != nil {
-		jsonError(w, http.StatusNotFound, err.Error())
+		if errors.Is(err, store.ErrNotFound) {
+			jsonError(w, http.StatusNotFound, "not found")
+		} else {
+			slog.Error("sidecar store history get failed", "err", err)
+			jsonError(w, http.StatusInternalServerError, "internal error")
+		}
 		return
 	}
 	skill := skillFromContext(r.Context())
@@ -406,7 +426,8 @@ func (s *Sidecar) handleStoreHistory(w http.ResponseWriter, r *http.Request) {
 
 	history, err := s.objStore.History(r.Context(), req.ID)
 	if err != nil {
-		jsonError(w, http.StatusInternalServerError, err.Error())
+		slog.Error("sidecar store history failed", "err", err)
+		jsonError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 

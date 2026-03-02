@@ -1713,17 +1713,14 @@ func startSidecar(cfg *config.Config, dbStore db.Store, credStore credentials.St
 	}
 
 	// Build object store — uses a separate SQLite file so direct-connecting
-	// skills can't access the immutable store tables.
+	// skills can't access the agent runtime tables.
 	var objStore store.Store
 	storeDBPath := strings.TrimSuffix(cfg.Storage.Database, ".db") + "_store.db"
-	storeDB, err := sqlite.New(storeDBPath)
+	objStoreDB, err := store.Open(storeDBPath)
 	if err != nil {
 		slog.Warn("could not open store DB", "path", storeDBPath, "err", err)
 	} else {
-		if err := storeDB.Migrate(context.Background()); err != nil {
-			slog.Warn("store DB migration failed", "err", err)
-		}
-		objStore = store.NewSQLite(storeDB.DB())
+		objStore = objStoreDB
 	}
 
 	// Build secret store from config

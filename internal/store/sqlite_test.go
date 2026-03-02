@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -18,22 +19,11 @@ func setup(t *testing.T) *SQLite {
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { db.Close() })
 
-	_, err = db.Exec(`CREATE TABLE store_objects (
-		id TEXT NOT NULL,
-		version INTEGER NOT NULL,
-		type TEXT NOT NULL,
-		skill TEXT NOT NULL,
-		data TEXT NOT NULL,
-		public INTEGER DEFAULT 0,
-		deleted INTEGER DEFAULT 0,
-		created_at TEXT DEFAULT (datetime('now')),
-		PRIMARY KEY (id, version)
-	)`)
-	if err != nil {
+	s := NewSQLite(db)
+	if err := s.EnsureSchema(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-
-	return NewSQLite(db)
+	return s
 }
 
 func TestPutCreatesVersion1(t *testing.T) {
@@ -99,8 +89,8 @@ func TestGetReturnsLatest(t *testing.T) {
 func TestGetNotFound(t *testing.T) {
 	s := setup(t)
 	_, err := s.Get(context.Background(), "nonexistent")
-	if err == nil {
-		t.Error("expected error for nonexistent object")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }
 
